@@ -10,9 +10,8 @@ def run() -> None:
     from app.qsign_application import QSignApplication
 
     target: Callable[[ft.Page], None] = QSignApplication().main
-    ft.app(target=target)
+    ft.run(main=target)
 
 
 if __name__ == "__main__":
     run()
-

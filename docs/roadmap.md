@@ -2,12 +2,12 @@
 
 1. Foundation Architecture — completed in v0.1
 2. PDF Rendering — completed in v0.2
-3. Document Transport (HTTP API / FTP)
-4. Wacom STU-430 SDK
-5. PAdES Signing with Windows Certificates
-6. Complete Workflow
-7. Distribution and Automatic Updates
+3. Development Infrastructure — completed in v0.2.1
+4. Document Transport (HTTP API / FTP)
+5. Wacom STU-430 SDK
+6. PAdES Signing with Windows Certificates
+7. Complete Workflow
+8. Distribution and Automatic Updates
 
 Each milestone must select technology only for its own scope and preserve the
 provider-neutral contracts established by the platform.
-

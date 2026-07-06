@@ -1,5 +1,6 @@
 """Minimal Flet shell for Milestone 1."""
 
+import base64
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -29,17 +30,28 @@ class MainView:
         self._page_count = ft.Text("Pagina — / —")
         self._zoom = ft.Text("Zoom: 100%")
         self._document_status = ft.Text("Stato: pronto")
-        self._viewer_content = ft.Container(
-            content=ft.Text("Visualizzazione PDF", size=24),
-            alignment=ft.Alignment.CENTER,
-            expand=True,
+        self._viewer_placeholder = ft.Text("Visualizzazione PDF", size=24)
+        self._pdf_image = ft.Image(
+            src="data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+            "YAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+            visible=False,
+            fit=ft.BoxFit.FILL,
+            error_content=ft.Text(
+                "Impossibile visualizzare la pagina PDF",
+                color=ft.Colors.RED_700,
+            ),
         )
-        self._interactive_viewer = ft.InteractiveViewer(
-            content=self._viewer_content,
-            pan_enabled=True,
-            scale_enabled=False,
-            constrained=False,
-            alignment=ft.Alignment.CENTER,
+        self._horizontal_viewer = ft.Row(
+            controls=[self._viewer_placeholder, self._pdf_image],
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+            scroll=ft.ScrollMode.AUTO,
+        )
+        self._document_viewer = ft.ListView(
+            controls=[self._horizontal_viewer],
+            scroll=ft.ScrollMode.AUTO,
+            padding=20,
             expand=True,
         )
 
@@ -95,10 +107,9 @@ class MainView:
             ]
         )
         viewer = ft.Container(
-            content=self._interactive_viewer,
+            content=self._document_viewer,
             expand=True,
             bgcolor=ft.Colors.GREY_200,
-            padding=20,
         )
         status_bar = ft.Container(
             content=ft.Row(
@@ -146,15 +157,12 @@ class MainView:
     ) -> None:
         """Display renderer output without knowing which engine produced it."""
         ft = self._ft
-        self._viewer_content.content = ft.Image(
-            src=image_content,
-            width=image_width,
-            height=image_height,
-            fit=ft.BoxFit.FILL,
-        )
-        self._viewer_content.width = image_width
-        self._viewer_content.height = image_height
-        self._viewer_content.expand = False
+        image_source = base64.b64encode(image_content).decode("ascii")
+        self._pdf_image.src = f"data:image/png;base64,{image_source}"
+        self._pdf_image.width = image_width
+        self._pdf_image.height = image_height
+        self._pdf_image.visible = True
+        self._viewer_placeholder.visible = False
         self._document_name.value = filename
         self._page_count.value = f"Pagina {page_number} / {page_count}"
         self._zoom.value = f"Zoom: {zoom:.0%}"
@@ -166,12 +174,8 @@ class MainView:
         self._page.update()
 
     def clear_document(self) -> None:
-        self._viewer_content.content = self._ft.Text(
-            "Visualizzazione PDF", size=24
-        )
-        self._viewer_content.width = None
-        self._viewer_content.height = None
-        self._viewer_content.expand = True
+        self._pdf_image.visible = False
+        self._viewer_placeholder.visible = True
         self._document_name.value = "Nessun documento"
         self._page_count.value = "Pagina — / —"
         self._zoom.value = "Zoom: 100%"
@@ -186,7 +190,7 @@ class MainView:
             title=ft.Text("QSign"),
             content=ft.Text("Document Rendering — Milestone 2"),
         )
-        self._page.open(dialog)
+        self._page.show_dialog(dialog)
 
     @staticmethod
     def _invoke(callback: Callable[[], None] | None) -> None:

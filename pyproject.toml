@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qsign"
-version = "0.2.0"
+version = "0.2.1"
 description = "Extensible document-signing platform"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "flet",
-    "pymupdf>=1.28,<1.29",
+    "flet==0.85.3",
+    "flet-desktop==0.85.3",
+    "pymupdf==1.28.0",
 ]
 
 [project.scripts]

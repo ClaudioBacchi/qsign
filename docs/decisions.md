@@ -43,3 +43,35 @@ dimensions. The UI receives only those bytes and primitive navigation values.
 - Page, pixmap, cache, and document resources have explicit release points.
 - Rotation, thumbnails, and annotation rendering remain placeholders.
 - PDF modification, signature insertion, and persistence remain unsupported.
+
+## ADR-003 — Early introduction of development and release tooling
+
+**Status:** Accepted for Milestone 2.1
+
+**Release:** `v0.2.1-development-infrastructure`
+
+### Context
+
+QSign is intended to become a long-lived commercial product. Reproducible
+development startup, explicit dependency installation, version metadata, and a
+stable release preparation entry point are needed before packaging technology
+is selected.
+
+### Decision
+
+Keep development and release tooling at the repository root. Provide separate
+normal and debug launchers, a pinned `requirements.txt`, machine-readable
+`version.json`, and a PowerShell release preparation script.
+
+The release script creates only the required directory structure and validation
+steps. PyInstaller packaging, executable signing, and documentation copying are
+recorded as commented placeholders and are not implemented.
+
+### Consequences
+
+- Developers use the same virtual environment and startup entry point.
+- Release preparation is repeatable without selecting a packager prematurely.
+- Build, distribution, release, IDE, cache, and runtime-log output stays out of
+  version control.
+- Future packaging work has a documented insertion point without affecting the
+  application architecture.

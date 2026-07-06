@@ -61,9 +61,21 @@ database, or environment-variable format is selected in this milestone.
 ### UI contains presentation behavior only
 
 `MainView` creates and updates Flet controls. Actions are callbacks supplied by
-`PDFViewerController` owns navigation and zoom state and invokes `PDFService`.
+the composition layer. `PDFViewerController` owns navigation and zoom state and
+invokes `PDFService`.
 The UI receives only PNG bytes and primitive display values; it knows neither
 PyMuPDF nor renderer objects.
+
+### Development and release infrastructure
+
+Development scripts live at the repository root and do not participate in the
+runtime dependency graph. `go.bat` and `go_debug.bat` activate the local virtual
+environment before invoking the existing application entry point.
+
+`build_release.ps1` currently verifies Python 3.14, validates `.venv`, cleans
+`build` and `dist`, and prepares a versioned release directory. Packaging,
+executable signing, and documentation copying remain explicit placeholders;
+no packaging technology has been introduced in Milestone 2.1.
 
 ## Extension rules
 
