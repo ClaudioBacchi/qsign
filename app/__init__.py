@@ -1,0 +1,2 @@
+"""QSign application composition package."""
+
