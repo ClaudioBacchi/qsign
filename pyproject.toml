@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qsign"
-version = "0.1.0"
+version = "0.2.0"
 description = "Extensible document-signing platform"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "flet",
+    "pymupdf>=1.28,<1.29",
 ]
 
 [project.scripts]
@@ -18,4 +19,3 @@ qsign = "app.main:run"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*", "config*", "models*", "services*", "ui*"]
-

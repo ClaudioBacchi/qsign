@@ -1,7 +1,7 @@
 # QSign roadmap
 
-1. Foundation Architecture
-2. PDF Rendering
+1. Foundation Architecture — completed in v0.1
+2. PDF Rendering — completed in v0.2
 3. Document Transport (HTTP API / FTP)
 4. Wacom STU-430 SDK
 5. PAdES Signing with Windows Certificates

@@ -5,7 +5,7 @@ from pathlib import Path
 from models.pdf_document import PDFDocument, PageSize
 from services.logging.logging_service import LoggingService
 from services.pdf.pdf_document import PDFDocumentBackend
-from services.pdf.pdf_renderer import RenderedPage
+from services.pdf.pdf_renderer import PDFRenderer, RenderedPage
 from services.pdf.pdf_signature import SignatureArea
 
 
@@ -13,10 +13,14 @@ class PDFService:
     """Manage one PDF lifecycle through an injected backend."""
 
     def __init__(
-        self, backend: PDFDocumentBackend, logger: LoggingService
+        self,
+        backend: PDFDocumentBackend,
+        logger: LoggingService,
+        renderer: PDFRenderer | None = None,
     ) -> None:
         self._backend = backend
         self._logger = logger
+        self._renderer = renderer
         self._document: PDFDocument | None = None
 
     @property
@@ -28,22 +32,32 @@ class PDFService:
         if not document_path.is_file():
             raise FileNotFoundError(document_path)
 
+        if self._document is not None:
+            self.close_document()
+
         data = self._backend.inspect(document_path)
-        document = PDFDocument(
-            path=document_path,
-            filename=document_path.name,
-            page_count=data.page_count,
-            page_sizes=data.page_sizes,
-            metadata=dict(data.metadata),
-            loaded=True,
-            signature_present=data.signature_present,
-        )
+        try:
+            document = PDFDocument(
+                path=document_path,
+                filename=document_path.name,
+                page_count=data.page_count,
+                page_sizes=data.page_sizes,
+                metadata=dict(data.metadata),
+                loaded=True,
+                signature_present=data.signature_present,
+            )
+        except Exception:
+            if self._renderer is not None:
+                self._renderer.close_document()
+            raise
         self._document = document
         self._logger.info("PDF opened", path=str(document_path))
         return document
 
     def close_document(self) -> None:
         document = self._require_document()
+        if self._renderer is not None:
+            self._renderer.close_document()
         document.loaded = False
         self._document = None
         self._logger.info("PDF closed", path=str(document.path))
@@ -83,10 +97,12 @@ class PDFService:
         raise NotImplementedError("PAdES signing is planned for Milestone 5")
 
     def render_page(self, page_index: int, scale: float = 1.0) -> RenderedPage:
-        raise NotImplementedError("PDF rendering is planned for Milestone 2")
+        document = self._require_document()
+        if self._renderer is None:
+            raise RuntimeError("No PDF renderer has been configured")
+        return self._renderer.render_page(document.path, page_index, scale)
 
     def _require_document(self) -> PDFDocument:
         if self._document is None or not self._document.loaded:
             raise RuntimeError("No PDF document is open")
         return self._document
-

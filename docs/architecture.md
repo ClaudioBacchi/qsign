@@ -2,10 +2,10 @@
 
 ## Scope
 
-Milestone 1 establishes contracts, dependency direction, and a desktop shell.
-It deliberately contains no real PDF parsing or rendering, document transport,
-signature-device SDK integration, certificate-store access, PAdES signing, or
-client workflow.
+Milestone 1 established contracts, dependency direction, and a desktop shell.
+Milestone 2 adds only PDF opening and page rendering. Document editing,
+transport, signature-device SDK integration, certificate-store access, PAdES
+signing, annotations, and client workflows remain excluded.
 
 ## Dependency direction
 
@@ -19,15 +19,22 @@ through constructors and never import the UI.
 
 ## Decisions
 
-### PDF libraries remain behind ports
+### PyMuPDF remains behind the rendering port
 
 `PDFService` owns the document lifecycle. Structural inspection and persistence
-are delegated to `PDFDocumentBackend`; rendering and signature operations have
-separate contracts. This avoids binding domain state to objects from a future
-PDF library and lets unit tests use a deterministic fake.
+are delegated to backend-neutral ports; rendering and signature operations have
+separate contracts. `PyMuPDFRenderer` implements `PDFRenderer` and is selected
+only in the application composition root. `PyMuPDFDocumentBackend` adapts that
+same rendering session to the pre-existing document-inspection port. Neither
+the UI, domain models, nor `PDFService` imports PyMuPDF.
 
-The default backend is intentionally unavailable. It fails explicitly rather
-than presenting placeholder bytes as valid PDF processing.
+The renderer owns one open document and a bounded LRU cache keyed by zero-based
+page index and zoom. Opening or closing a document clears the cache. Pixmaps and
+page handles are released immediately after PNG creation; the document is
+closed deterministically through `PDFService.close_document`.
+
+The persistence backend remains intentionally unavailable because PDF editing
+and saving are outside Milestone 2.
 
 ### Providers implement stable service contracts
 
@@ -54,8 +61,9 @@ database, or environment-variable format is selected in this milestone.
 ### UI contains presentation behavior only
 
 `MainView` creates and updates Flet controls. Actions are callbacks supplied by
-the application composition layer. Future controllers can invoke workflows
-without placing document logic in UI event handlers.
+`PDFViewerController` owns navigation and zoom state and invokes `PDFService`.
+The UI receives only PNG bytes and primitive display values; it knows neither
+PyMuPDF nor renderer objects.
 
 ## Extension rules
 
@@ -65,4 +73,3 @@ without placing document logic in UI event handlers.
 4. Do not import `ui` from `services`, `providers`, or `models`.
 5. Add contract tests for every new provider and unit tests for orchestration.
 6. Keep unsupported milestone behavior explicit with `NotImplementedError`.
-
