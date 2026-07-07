@@ -371,6 +371,25 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertTrue(self.view.manual_mode)
         self.assertEqual(self.view.pages[-1][4], ())
 
+    def test_structural_template_tolerates_partial_signature_match(self) -> None:
+        self.controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.partial_structural"),
+            pdf_provider=FakePDFProviderPartialStructuralDocument(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create("qsign.tests.controller.partial_structural_detector")
+            ),
+            template_repository=FakePartialStructuralTemplateRepository(),
+        )
+
+        self.controller.open_document("portal.pdf")
+
+        overlays = self.view.pages[-1][4]
+        self.assertEqual(len(overlays), 1)
+        self.assertEqual(overlays[0].left, 33)
+        self.assertEqual(overlays[0].top, 44)
+
     def test_manual_signature_rectangle_saves_current_page_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             self.controller = PDFViewerController(
@@ -896,6 +915,48 @@ class FakePDFProviderScreeningDocument:
                 "precoce",
                 "patologie",
                 "tumorali",
+            ),
+            top=20,
+        )
+        return Document(
+            source_path=Path(path),
+            page_count=1,
+            pages=(
+                Page(
+                    index=0,
+                    width=200,
+                    height=200,
+                    text_blocks=(
+                        TextBlock(
+                            text=" ".join(word.text for word in words),
+                            bounds=Rectangle(10, 20, 190, 30),
+                            words=words,
+                            block_index=0,
+                        ),
+                    ),
+                ),
+            ),
+            metadata=Metadata(),
+        )
+
+
+class FakePDFProviderPartialStructuralDocument:
+    def load_document(self, path: str | Path) -> Document:
+        words = _words_from_text(
+            (
+                "Salute",
+                "Lavoro",
+                "Società",
+                "Coopera",
+                "Ambulatori",
+                "modalit",
+                "consultazione",
+                "idoneit",
+                "referti",
+                "data__________",
+                "corre",
+                "visualizzazione",
+                "necessario",
             ),
             top=20,
         )
@@ -1468,6 +1529,86 @@ class FakeLegacyHeaderOnlyTemplateRepository:
                         y_offset=30,
                         width=80,
                         height=40,
+                    ),
+                ),
+                settings=TemplateSettings(recognition_threshold=80),
+            ),
+        )
+
+    def get_template(self, template_id: str) -> Template:
+        return self.list_templates()[0]
+
+
+class FakePartialStructuralTemplateRepository:
+    def list_templates(self) -> tuple[Template, ...]:
+        return (
+            Template(
+                template_id="learned_partial_structural",
+                code="LEARNED_PARTIAL_STRUCTURAL",
+                name="Learned partial structural",
+                document_type="manual_signature_flow",
+                version="0.1.0",
+                state=TemplateState.DRAFT,
+                recognition_rules=(
+                    RecognitionRule(
+                        rule_id="manual-filename-stem",
+                        rule_type="literal",
+                        expression="portal",
+                        required=False,
+                        weight=0.25,
+                    ),
+                    RecognitionRule(
+                        rule_id="manual-recognition-phrase",
+                        rule_type="literal",
+                        expression="Salute Lavoro Società Coopera Ambulatori",
+                        required=False,
+                        weight=6.0,
+                    ),
+                    RecognitionRule(
+                        rule_id="manual-structural-signature",
+                        rule_type="literal",
+                        expression=(
+                            "modalit consultazione idoneit referti data__________ corre "
+                            "visualizzazione necessario collegarsi indirizzo saluteelavoro "
+                            "tablet inserire campo username primo"
+                        ),
+                        required=True,
+                        weight=10.0,
+                    ),
+                    *(
+                        RecognitionRule(
+                            rule_id=f"manual-keyword-{index}",
+                            rule_type="literal",
+                            expression=expression,
+                            required=False,
+                            weight=1.25,
+                        )
+                        for index, expression in enumerate(
+                            (
+                                "modalit",
+                                "consultazione",
+                                "idoneit",
+                                "referti",
+                                "data__________",
+                                "corre",
+                                "visualizzazione",
+                                "necessario",
+                            ),
+                            start=1,
+                        )
+                    ),
+                ),
+                placement_rules=(
+                    PlacementRule(
+                        placement_id="manual-signature",
+                        role="signer",
+                        anchor_id="manual",
+                        side="manual",
+                        alignment="manual",
+                        x_offset=33,
+                        y_offset=44,
+                        width=88,
+                        height=55,
                     ),
                 ),
                 settings=TemplateSettings(recognition_threshold=80),

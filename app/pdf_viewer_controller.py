@@ -688,6 +688,11 @@ class PDFViewerController:
     def _effective_recognition_threshold(template: Template) -> float:
         if (
             template.document_type == "manual_signature_flow"
+            and _has_structural_recognition_rule(template)
+        ):
+            return min(template.settings.recognition_threshold, 75.0)
+        if (
+            template.document_type == "manual_signature_flow"
             and len(template.recognition_rules) == 1
             and template.recognition_rules[0].rule_id == "manual-recognition-phrase"
         ):
@@ -1040,6 +1045,13 @@ def _template_rank(template: Template) -> tuple[int, int, str]:
 def _template_timestamp(template_id: str) -> int:
     match = re.search(r"_(\d{10,})$", template_id)
     return int(match.group(1)) if match else 0
+
+
+def _has_structural_recognition_rule(template: Template) -> bool:
+    return any(
+        rule.rule_id.startswith("manual-structural-")
+        for rule in template.recognition_rules
+    )
 
 
 def _literal_match_score(expression: str, document_text: str) -> float:
