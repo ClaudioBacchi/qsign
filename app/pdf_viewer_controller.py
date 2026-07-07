@@ -2,7 +2,6 @@
 
 import json
 import re
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -431,7 +430,9 @@ class PDFViewerController:
             return
 
         self._template_root.mkdir(exist_ok=True)
-        template_path = self._template_root / self._manual_template_filename()
+        template_path = self._template_root / self._manual_template_filename(
+            self._canonical_document
+        )
         recognition_rules = self._manual_recognition_rules(self._canonical_document)
         anchor_rule, placement_rules = self._manual_template_placement_rules(
             self._canonical_document
@@ -445,7 +446,7 @@ class PDFViewerController:
             "document_type": "manual_signature_flow",
             "version": "0.1.0",
             "state": "draft",
-            "priority": 1,
+            "priority": 5,
             "document_rules": [],
             "recognition_rules": recognition_rules,
             "anchor_rules": [anchor_rule] if anchor_rule is not None else [],
@@ -715,7 +716,7 @@ class PDFViewerController:
                     if placement.side == "manual":
                         continue
                     match = self._template_anchor_match_for_placement(
-                        result.matches, placement
+                        document, template, result.matches, placement
                     )
                     if match is None:
                         continue
@@ -761,15 +762,20 @@ class PDFViewerController:
                 return True
         return False
 
-    @staticmethod
     def _template_anchor_match_for_placement(
-        matches: tuple[AnchorMatch, ...], placement: PlacementRule
+        self,
+        document: Document,
+        template: Template,
+        matches: tuple[AnchorMatch, ...],
+        placement: PlacementRule,
     ) -> AnchorMatch | None:
         if placement.page_index is not None:
             return next(
                 (match for match in matches if match.page_index == placement.page_index),
                 None,
             )
+        if template.document_type == "manual_signature_flow":
+            return self._best_signature_anchor_match(document, matches)
         return matches[0] if matches else None
 
     @staticmethod
@@ -783,11 +789,8 @@ class PDFViewerController:
             ),
         )
 
-    def _manual_template_filename(self) -> str:
-        document = self._pdf_service.current_document
-        stem = document.path.stem if document is not None else "manual"
-        safe_stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", stem).strip("_") or "manual"
-        return f"learned_{safe_stem}_{int(time.time())}.json"
+    def _manual_template_filename(self, document: Document) -> str:
+        return f"learned_{_manual_template_key(document)}.json"
 
     def _manual_template_placement_rules(
         self, document: Document
@@ -812,7 +815,7 @@ class PDFViewerController:
             "y_offset": self._signature_rectangle.top - anchor_bounds.top,
             "width": self._signature_rectangle.width,
             "height": self._signature_rectangle.height,
-            "page_index": self._signature_page_index,
+            "page_index": None,
             "required": True,
         }
         anchor_rule = {
@@ -907,7 +910,7 @@ class PDFViewerController:
                 "expression": filename_stem,
                 "scope": "document",
                 "required": False,
-                "weight": 2.0,
+                "weight": 0.25,
             },
             {
                 "rule_id": "manual-recognition-phrase",
@@ -915,7 +918,7 @@ class PDFViewerController:
                 "expression": phrase,
                 "scope": "document",
                 "required": False,
-                "weight": 3.0,
+                "weight": 6.0,
             },
         ]
         for index, token in enumerate(_distinctive_tokens(phrase)[:8], start=1):
@@ -926,7 +929,7 @@ class PDFViewerController:
                     "expression": token,
                     "scope": "document",
                     "required": False,
-                    "weight": 1.0,
+                    "weight": 1.25,
                 }
             )
         return rules
@@ -949,6 +952,14 @@ def _recognition_phrase(document: Document) -> str:
         for word in page.words[:24]
     )
     return " ".join(text.split())[:160] or document.source_path.stem
+
+
+def _manual_template_key(document: Document) -> str:
+    tokens = _distinctive_tokens(_recognition_phrase(document))[:8]
+    if not tokens:
+        tokens = _distinctive_tokens(document.source_path.stem)[:8]
+    value = "_".join(tokens) or document.source_path.stem or "manual"
+    return re.sub(r"[^a-z0-9_]+", "_", value.casefold()).strip("_") or "manual"
 
 
 def _normalize(value: str) -> str:
@@ -978,7 +989,12 @@ def _literal_match_score(expression: str, document_text: str) -> float:
 
 
 def _filename_stem_match_score(template_stem: str, document_stem: str) -> float:
-    return 1.0 if _normalize_filename_stem(template_stem) == _normalize_filename_stem(document_stem) else 0.0
+    return (
+        1.0
+        if _normalize_filename_stem(template_stem)
+        == _normalize_filename_stem(document_stem)
+        else 0.0
+    )
 
 
 def _normalize_filename_stem(value: str) -> str:

@@ -275,13 +275,54 @@ class PDFViewerControllerTests(unittest.TestCase):
             self.assertIsNotNone(self.view.save_callback)
             self.view.save_callback()
 
-            saved_templates = list(Path(directory).glob("learned_sample_*.json"))
+            saved_templates = list(Path(directory).glob("learned_*.json"))
             self.assertEqual(len(saved_templates), 1)
             self.assertIn(
                 "manual_signature_flow",
                 saved_templates[0].read_text(encoding="utf-8"),
             )
             self.assertIn('"page_index": 0', saved_templates[0].read_text(encoding="utf-8"))
+
+    def test_saving_manual_template_updates_stable_learned_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.stable_save"),
+                pdf_provider=FakePDFProviderWithoutAnchors(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create("qsign.tests.controller.stable_save_detector")
+                ),
+                template_root=directory,
+            )
+
+            self.controller.open_document("sample.pdf")
+            self.controller.set_manual_signature_rectangle(
+                left=20,
+                top=30,
+                width=80,
+                height=40,
+                image_width=200,
+                image_height=200,
+            )
+            self.view.save_callback()
+            self.controller.set_manual_signature_rectangle(
+                left=25,
+                top=35,
+                width=90,
+                height=45,
+                image_width=200,
+                image_height=200,
+            )
+            self.view.save_callback()
+
+            saved_templates = list(Path(directory).glob("learned_*.json"))
+            self.assertEqual(len(saved_templates), 1)
+            content = saved_templates[0].read_text(encoding="utf-8")
+            self.assertIn('"x_offset": 25.0', content)
+            self.assertIn('"y_offset": 35.0', content)
+            self.assertIn('"width": 90.0', content)
+            self.assertIn('"height": 45.0', content)
 
     def test_manual_signature_rectangle_saves_current_page_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -308,7 +349,7 @@ class PDFViewerControllerTests(unittest.TestCase):
             )
             self.view.save_callback()
 
-            saved_templates = list(Path(directory).glob("learned_sample_*.json"))
+            saved_templates = list(Path(directory).glob("learned_*.json"))
             self.assertEqual(len(saved_templates), 1)
             self.assertIn('"page_index": 1', saved_templates[0].read_text(encoding="utf-8"))
 
@@ -336,7 +377,7 @@ class PDFViewerControllerTests(unittest.TestCase):
             )
             self.view.save_callback()
 
-            saved_templates = list(Path(directory).glob("learned_sample_*.json"))
+            saved_templates = list(Path(directory).glob("learned_*.json"))
             content = saved_templates[0].read_text(encoding="utf-8")
             self.assertIn('"anchor_rules": [', content)
             self.assertIn("\"expression\": \"In fede L'interessato\"", content)
@@ -371,7 +412,7 @@ class PDFViewerControllerTests(unittest.TestCase):
             )
             self.view.save_callback()
 
-            saved_templates = list(Path(directory).glob("learned_sample_*.json"))
+            saved_templates = list(Path(directory).glob("learned_*.json"))
             content = saved_templates[0].read_text(encoding="utf-8")
             self.assertIn('"expression": "Il lavoratore per presa visione"', content)
             self.assertIn('"x_offset": -40.0', content)
@@ -379,6 +420,27 @@ class PDFViewerControllerTests(unittest.TestCase):
             self.assertIn('"width": 160.0', content)
             self.assertIn('"height": 60.0', content)
             self.assertIn('"page_index": 1', content)
+
+    def test_relative_template_without_fixed_page_follows_best_anchor_occurrence(self) -> None:
+        self.controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.relative_no_page"),
+            pdf_provider=FakePDFProviderRepeatedWorkerAcknowledgement(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create("qsign.tests.controller.relative_no_page_detector")
+            ),
+            template_repository=FakeRelativeTemplateWithoutFixedPageRepository(),
+        )
+
+        self.controller.open_document("sample.pdf")
+
+        overlays = self.view.pages[-1][4]
+        self.assertEqual(self.controller.state.page_index, 1)
+        self.assertEqual(self.view.pages[-1][0], 2)
+        self.assertEqual(len(overlays), 1)
+        self.assertEqual(overlays[0].left, 40)
+        self.assertEqual(overlays[0].top, 120)
 
     def test_recognized_template_prepares_signature_rectangle(self) -> None:
         self.controller = PDFViewerController(
@@ -597,7 +659,7 @@ class PDFViewerControllerTests(unittest.TestCase):
             )
             self.view.save_callback()
 
-            saved_templates = list(Path(directory).glob("learned_sample_*.json"))
+            saved_templates = list(Path(directory).glob("learned_*.json"))
             content = saved_templates[0].read_text(encoding="utf-8")
             self.assertIn('"anchor_rules": []', content)
             self.assertNotIn('"placement_id": "relative-signature"', content)
@@ -1314,6 +1376,64 @@ class FakeBadRelativeLearnedTemplateRepository:
                         width=160,
                         height=60,
                         page_index=1,
+                    ),
+                ),
+            ),
+        )
+
+    def get_template(self, template_id: str) -> Template:
+        return self.list_templates()[0]
+
+
+class FakeRelativeTemplateWithoutFixedPageRepository:
+    def list_templates(self) -> tuple[Template, ...]:
+        return (
+            Template(
+                template_id="learned_worker_ack",
+                code="LEARNED_WORKER_ACK",
+                name="Learned worker acknowledgement",
+                document_type="manual_signature_flow",
+                version="0.1.0",
+                state=TemplateState.DRAFT,
+                recognition_rules=(
+                    RecognitionRule(
+                        rule_id="contains-worker-ack",
+                        rule_type="literal",
+                        expression="Il lavoratore per presa visione",
+                        required=True,
+                    ),
+                ),
+                anchor_rules=(
+                    AnchorRule(
+                        anchor_id="manual-learned-anchor",
+                        name="Anchor appreso",
+                        search_type="text",
+                        expression="Il lavoratore per presa visione",
+                    ),
+                ),
+                placement_rules=(
+                    PlacementRule(
+                        placement_id="relative-signature",
+                        role="signer",
+                        anchor_id="manual-learned-anchor",
+                        side="relative",
+                        alignment="manual",
+                        x_offset=20,
+                        y_offset=50,
+                        width=160,
+                        height=60,
+                    ),
+                    PlacementRule(
+                        placement_id="manual-signature",
+                        role="signer",
+                        anchor_id="manual",
+                        side="manual",
+                        alignment="manual",
+                        x_offset=20,
+                        y_offset=30,
+                        width=80,
+                        height=40,
+                        page_index=0,
                     ),
                 ),
             ),
