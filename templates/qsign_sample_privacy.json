@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0",
+  "template_id": "qsign-demo-privacy",
+  "code": "QSIGN_DEMO_PRIVACY",
+  "name": "QSign demo privacy document",
+  "description": "Template dimostrativo per verificare il caricamento da filesystem.",
+  "document_type": "privacy_consent",
+  "version": "0.1.0",
+  "state": "draft",
+  "priority": 10,
+  "document_rules": [
+    {
+      "rule_id": "document-is-pdf-sample",
+      "description": "Documento dimostrativo usato dai test QSign."
+    }
+  ],
+  "recognition_rules": [
+    {
+      "rule_id": "contains-qsign",
+      "rule_type": "literal",
+      "expression": "QSign",
+      "scope": "document",
+      "required": true,
+      "weight": 1.0
+    },
+    {
+      "rule_id": "contains-document-rendering",
+      "rule_type": "literal",
+      "expression": "Document Rendering",
+      "scope": "first_page",
+      "weight": 2.0
+    }
+  ],
+  "anchor_rules": [
+    {
+      "anchor_id": "main-signature-anchor",
+      "name": "Firma principale",
+      "search_type": "literal",
+      "expression": "QSign",
+      "scope": "document",
+      "occurrence_policy": "first",
+      "required": true
+    }
+  ],
+  "placement_rules": [
+    {
+      "placement_id": "main-signature",
+      "role": "signer",
+      "anchor_id": "main-signature-anchor",
+      "side": "below",
+      "alignment": "start",
+      "x_offset": 0,
+      "y_offset": 12,
+      "width": 180,
+      "height": 60,
+      "required": true
+    }
+  ],
+  "settings": {
+    "recognition_threshold": 80,
+    "ambiguity_margin": 5,
+    "normalization_profile": "default"
+  }
+}

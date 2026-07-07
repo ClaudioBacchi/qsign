@@ -77,6 +77,39 @@ environment before invoking the existing application entry point.
 executable signing, and documentation copying remain explicit placeholders;
 no packaging technology has been introduced in Milestone 2.1.
 
+### Document Intelligence design
+
+The planned Document Intelligence Engine is a provider-neutral, read-only
+orchestrator over five components:
+
+1. Template Engine supplies one validated immutable template snapshot.
+2. Recognition Engine selects a document template through mandatory gates,
+   weighted deterministic evidence, thresholds, and ambiguity policy.
+3. Anchor Engine resolves configured textual references to canonical geometry.
+4. Placement Engine calculates and validates anchor-relative signature areas.
+5. Document Intelligence Engine assembles evidence and neutral workflow
+   preparation without executing a workflow.
+
+A future document-analysis port will expose ordered text and bounding geometry
+without leaking PDF-library types. Image-only PDFs are reported as lacking a
+text layer; OCR, AI, machine learning, and fuzzy inference are excluded.
+
+Intelligence geometry uses PDF points, a top-left origin on the visible
+CropBox, rightward X, downward Y, and normalized page rotation. Adapters are
+responsible for conversion to and from provider-specific coordinate systems.
+
+The engine fails closed on unknown or ambiguous recognition, unresolved
+anchors, and invalid placement. It has no dependency on Flet, Wacom, PAdES,
+certificates, transport, or client workflow execution.
+
+Detailed design:
+
+- [`document_intelligence.md`](document_intelligence.md)
+- [`template_engine.md`](template_engine.md)
+- [`recognition_engine.md`](recognition_engine.md)
+- [`placement_engine.md`](placement_engine.md)
+- [`template_designer.md`](template_designer.md)
+
 ## Extension rules
 
 1. Put technology-specific code in a provider.

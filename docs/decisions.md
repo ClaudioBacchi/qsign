@@ -75,3 +75,80 @@ recorded as commented placeholders and are not implemented.
   version control.
 - Future packaging work has a documented insertion point without affecting the
   application architecture.
+
+## ADR-004 — Deterministic Document Intelligence architecture
+
+**Status:** Accepted as design; not implemented
+
+**Release:** Documentation milestone, no runtime release
+
+### Context
+
+QSign must recognize document types, locate signature points, and prepare
+workflow data offline without requiring a physician to search through the PDF.
+The result affects later signing activity, so hidden heuristics and
+unexplainable approximations are unacceptable.
+
+### Decision
+
+Design Document Intelligence as five separate provider-neutral components:
+Document Intelligence, Template, Recognition, Anchor, and Placement Engines.
+
+Recognition uses mandatory and exclusion gates followed by normalized weighted
+evidence. A result is accepted only above threshold and outside the configured
+ambiguity margin. Anchor resolution operates on textual references and their
+geometry. Signature rectangles are calculated from anchor-relative placement
+rules in one canonical coordinate system.
+
+The engine returns evidence and neutral workflow preparation. It does not
+execute workflows or depend on Wacom, PAdES, certificates, Flet, transport, or
+client integrations.
+
+AI, machine learning, OCR, fuzzy semantic matching, image classification, and
+absolute signature coordinates in templates are excluded.
+
+### Consequences
+
+- Every automatic result can be reproduced and explained rule by rule.
+- Unknown documents, close template scores, ambiguous anchors, and invalid
+  rectangles stop automatic preparation.
+- Scanned documents without a text layer cannot be recognized until a separate
+  future decision explicitly introduces an allowed extraction strategy.
+- New document families are added with validated templates rather than
+  application conditionals.
+- A document-analysis adapter must provide ordered text and canonical geometry
+  without exposing concrete PDF-library objects.
+
+## ADR-005 — Template persistence boundary and planned SQLite repository
+
+**Status:** Accepted as design; database not implemented
+
+**Release:** Documentation milestone, no runtime release
+
+### Context
+
+The future Template Designer needs transactional draft publication, immutable
+version history, activation state, audit metadata, and reliable offline
+operation. Templates must also remain portable and testable independently from
+their storage.
+
+### Decision
+
+Define a storage-neutral `TemplateRepository` boundary. Plan SQLite as the
+default local production repository because it is offline, transactional,
+single-file, and serverless. Use a canonical versioned JSON package for import,
+export, review, and portability.
+
+No database, schema, migration, or persistence implementation is created in
+this milestone.
+
+### Consequences
+
+- Intelligence analysis consumes immutable template snapshots and performs no
+  storage queries during a run.
+- The Template Designer never manipulates tables directly.
+- Published versions are immutable and referenced by version and checksum.
+- SQLite can be replaced without changing recognition, anchor, or placement
+  behavior.
+- Schema design, migration, backup, recovery, locking, and encryption policy
+  remain mandatory work for the future implementation milestone.
