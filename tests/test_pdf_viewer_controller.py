@@ -324,6 +324,53 @@ class PDFViewerControllerTests(unittest.TestCase):
             self.assertIn('"width": 90.0', content)
             self.assertIn('"height": 45.0', content)
 
+    def test_manual_template_saves_structural_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.structural_save"),
+                pdf_provider=FakePDFProviderScreeningDocument(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create("qsign.tests.controller.structural_save_detector")
+                ),
+                template_root=directory,
+            )
+
+            self.controller.open_document("screening.pdf")
+            self.controller.set_manual_signature_rectangle(
+                left=20,
+                top=30,
+                width=80,
+                height=40,
+                image_width=200,
+                image_height=200,
+            )
+            self.view.save_callback()
+
+            saved_templates = list(Path(directory).glob("learned_*.json"))
+            content = saved_templates[0].read_text(encoding="utf-8")
+            self.assertIn('"rule_id": "manual-structural-signature"', content)
+            self.assertIn("prevenzione oncologica", content)
+            self.assertIn("screening", saved_templates[0].name)
+
+    def test_legacy_manual_template_without_structural_signature_requires_filename_match(self) -> None:
+        self.controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.legacy_header_only"),
+            pdf_provider=FakePDFProviderHeaderLikeDocument(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create("qsign.tests.controller.legacy_header_only_detector")
+            ),
+            template_repository=FakeLegacyHeaderOnlyTemplateRepository(),
+        )
+
+        self.controller.open_document("different.pdf")
+
+        self.assertTrue(self.view.manual_mode)
+        self.assertEqual(self.view.pages[-1][4], ())
+
     def test_manual_signature_rectangle_saves_current_page_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             self.controller = PDFViewerController(
@@ -781,6 +828,89 @@ class FakePDFProviderWithoutAnchors:
                         TextBlock(
                             text="Documento Speciale",
                             bounds=Rectangle(10, 20, 130, 30),
+                            words=words,
+                            block_index=0,
+                        ),
+                    ),
+                ),
+            ),
+            metadata=Metadata(),
+        )
+
+
+class FakePDFProviderHeaderLikeDocument:
+    def load_document(self, path: str | Path) -> Document:
+        words = _words_from_text(
+            (
+                "Salute",
+                "Lavoro",
+                "Società",
+                "Coopera",
+                "Ambulatori",
+                "Via",
+                "Meucci",
+                "Documento",
+                "Speciale",
+            ),
+            top=20,
+        )
+        return Document(
+            source_path=Path(path),
+            page_count=1,
+            pages=(
+                Page(
+                    index=0,
+                    width=200,
+                    height=200,
+                    text_blocks=(
+                        TextBlock(
+                            text=" ".join(word.text for word in words),
+                            bounds=Rectangle(10, 20, 170, 30),
+                            words=words,
+                            block_index=0,
+                        ),
+                    ),
+                ),
+            ),
+            metadata=Metadata(),
+        )
+
+
+class FakePDFProviderScreeningDocument:
+    def load_document(self, path: str | Path) -> Document:
+        words = _words_from_text(
+            (
+                "Salute",
+                "Lavoro",
+                "Società",
+                "Coopera",
+                "Ambulatori",
+                "Via",
+                "Meucci",
+                "Informativa",
+                "prevenzione",
+                "oncologica",
+                "programmi",
+                "screening",
+                "diagnosi",
+                "precoce",
+                "patologie",
+                "tumorali",
+            ),
+            top=20,
+        )
+        return Document(
+            source_path=Path(path),
+            page_count=1,
+            pages=(
+                Page(
+                    index=0,
+                    width=200,
+                    height=200,
+                    text_blocks=(
+                        TextBlock(
+                            text=" ".join(word.text for word in words),
+                            bounds=Rectangle(10, 20, 190, 30),
                             words=words,
                             block_index=0,
                         ),
@@ -1284,6 +1414,70 @@ class FakeFilenameSpecificLearnedTemplateRepository:
         )
 
 
+class FakeLegacyHeaderOnlyTemplateRepository:
+    def list_templates(self) -> tuple[Template, ...]:
+        return (
+            Template(
+                template_id="learned_header_only",
+                code="LEARNED_HEADER_ONLY",
+                name="Learned header only",
+                document_type="manual_signature_flow",
+                version="0.1.0",
+                state=TemplateState.DRAFT,
+                recognition_rules=(
+                    RecognitionRule(
+                        rule_id="manual-filename-stem",
+                        rule_type="literal",
+                        expression="original",
+                        required=False,
+                        weight=0.25,
+                    ),
+                    RecognitionRule(
+                        rule_id="manual-recognition-phrase",
+                        rule_type="literal",
+                        expression=(
+                            "Salute Lavoro Società Coopera Ambulatori Via Meucci "
+                            "Documento Speciale"
+                        ),
+                        required=False,
+                        weight=6.0,
+                    ),
+                    RecognitionRule(
+                        rule_id="manual-keyword-1",
+                        rule_type="literal",
+                        expression="salute",
+                        required=False,
+                        weight=1.25,
+                    ),
+                    RecognitionRule(
+                        rule_id="manual-keyword-2",
+                        rule_type="literal",
+                        expression="lavoro",
+                        required=False,
+                        weight=1.25,
+                    ),
+                ),
+                placement_rules=(
+                    PlacementRule(
+                        placement_id="manual-signature",
+                        role="signer",
+                        anchor_id="manual",
+                        side="manual",
+                        alignment="manual",
+                        x_offset=20,
+                        y_offset=30,
+                        width=80,
+                        height=40,
+                    ),
+                ),
+                settings=TemplateSettings(recognition_threshold=80),
+            ),
+        )
+
+    def get_template(self, template_id: str) -> Template:
+        return self.list_templates()[0]
+
+
 class FakeManualFixedTemplateRepository:
     def list_templates(self) -> tuple[Template, ...]:
         return (
@@ -1617,16 +1811,7 @@ class FakeWeakRelativeTemplateRepository:
 
 
 def _page_with_words(index: int, texts: tuple[str, ...], top: float) -> Page:
-    words = tuple(
-        Word(
-            text=text,
-            bounds=Rectangle(50 + word_index * 15, top, 60 + word_index * 20, top + 10),
-            block_index=0,
-            line_index=0,
-            word_index=word_index,
-        )
-        for word_index, text in enumerate(texts)
-    )
+    words = _words_from_text(texts, top=top, left=50)
     return Page(
         index=index,
         width=200,
@@ -1640,6 +1825,26 @@ def _page_with_words(index: int, texts: tuple[str, ...], top: float) -> Page:
             ),
         ),
     )
+
+
+def _words_from_text(
+    texts: tuple[str, ...], top: float, left: float = 10
+) -> tuple[Word, ...]:
+    current_left = left
+    words = []
+    for word_index, text in enumerate(texts):
+        width = max(10, len(text) * 5)
+        words.append(
+            Word(
+                text=text,
+                bounds=Rectangle(current_left, top, current_left + width, top + 10),
+                block_index=0,
+                line_index=0,
+                word_index=word_index,
+            )
+        )
+        current_left += width + 5
+    return tuple(words)
 
 
 def _worker_acknowledgement_page(

@@ -31,6 +31,30 @@ _DEMO_ANCHOR_RULES: tuple[tuple[str, ...], ...] = (
     ("Firma Cliente",),
 )
 
+_COMMON_MANUAL_TEMPLATE_TOKENS: frozenset[str] = frozenset(
+    {
+        "salute",
+        "lavoro",
+        "societ",
+        "coopera",
+        "cooperativa",
+        "ambulatori",
+        "meucci",
+        "47122",
+        "47035",
+        "forl",
+        "forli",
+        "0543",
+        "798337",
+        "cari",
+        "gambe",
+        "gambettola",
+        "ghinassi",
+        "ennio",
+        "massimo",
+    }
+)
+
 
 class PDFViewerView(Protocol):
     """UI operations required by the controller."""
@@ -677,6 +701,8 @@ class PDFViewerController:
         document_text = _normalized_document_text(document)
         score = 0.0
         total_weight = 0.0
+        filename_score: float | None = None
+        has_structural_rule = False
         for rule in rules:
             expression = _normalize(rule.expression)
             if (
@@ -686,8 +712,14 @@ class PDFViewerController:
                 match_score = _filename_stem_match_score(
                     rule.expression, document.source_path.stem
                 )
+                filename_score = match_score
             else:
                 match_score = _literal_match_score(expression, document_text)
+            if (
+                template.document_type == "manual_signature_flow"
+                and rule.rule_id.startswith("manual-structural-")
+            ):
+                has_structural_rule = True
             matched = match_score > 0
             if rule.required and not matched:
                 return 0.0
@@ -696,7 +728,14 @@ class PDFViewerController:
             total_weight += rule.weight
             if matched:
                 score += rule.weight * match_score
-        return (score / total_weight) * 100 if total_weight else 0.0
+        final_score = (score / total_weight) * 100 if total_weight else 0.0
+        if (
+            template.document_type == "manual_signature_flow"
+            and not has_structural_rule
+            and filename_score == 0.0
+        ):
+            return min(final_score, 75.0)
+        return final_score
 
     def _apply_template_anchor(self, document: Document, template: Template) -> bool:
         for anchor_rule in template.anchor_rules:
@@ -921,7 +960,19 @@ class PDFViewerController:
                 "weight": 6.0,
             },
         ]
-        for index, token in enumerate(_distinctive_tokens(phrase)[:8], start=1):
+        structural_signature = " ".join(_structural_tokens(document)[:16])
+        if structural_signature:
+            rules.append(
+                {
+                    "rule_id": "manual-structural-signature",
+                    "rule_type": "literal",
+                    "expression": structural_signature,
+                    "scope": "document",
+                    "required": True,
+                    "weight": 10.0,
+                }
+            )
+        for index, token in enumerate(_structural_tokens(document)[:8], start=1):
             rules.append(
                 {
                     "rule_id": f"manual-keyword-{index}",
@@ -955,11 +1006,27 @@ def _recognition_phrase(document: Document) -> str:
 
 
 def _manual_template_key(document: Document) -> str:
-    tokens = _distinctive_tokens(_recognition_phrase(document))[:8]
+    tokens = _structural_tokens(document)[:8]
     if not tokens:
         tokens = _distinctive_tokens(document.source_path.stem)[:8]
     value = "_".join(tokens) or document.source_path.stem or "manual"
     return re.sub(r"[^a-z0-9_]+", "_", value.casefold()).strip("_") or "manual"
+
+
+def _structural_tokens(document: Document) -> tuple[str, ...]:
+    text = " ".join(
+        word.text
+        for page in document.pages
+        for word in page.words
+    )
+    return tuple(
+        token
+        for token in _distinctive_tokens(text)
+        if token not in _COMMON_MANUAL_TEMPLATE_TOKENS
+        and not token.isdigit()
+        and len(token) > 4
+        and not re.fullmatch(r"_+", token)
+    )
 
 
 def _normalize(value: str) -> str:
