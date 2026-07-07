@@ -42,6 +42,7 @@ class MainView:
         self._on_next: Callable[[], None] | None = None
         self._on_zoom_in: Callable[[], None] | None = None
         self._on_zoom_out: Callable[[], None] | None = None
+        self._on_save_signed_pdf: Callable[[], None] | None = None
         self._on_signature_area_click: Callable[[], None] | None = None
         self._on_manual_signature_rect: (
             Callable[[float, float, float, float, float, float], None] | None
@@ -121,6 +122,7 @@ class MainView:
         on_next: Callable[[], None],
         on_zoom_in: Callable[[], None],
         on_zoom_out: Callable[[], None],
+        on_save_signed_pdf: Callable[[], None] | None = None,
         on_manual_signature_rect: (
             Callable[[float, float, float, float, float, float], None] | None
         ) = None,
@@ -133,6 +135,7 @@ class MainView:
         self._on_next = on_next
         self._on_zoom_in = on_zoom_in
         self._on_zoom_out = on_zoom_out
+        self._on_save_signed_pdf = on_save_signed_pdf
         self._on_manual_signature_rect = on_manual_signature_rect
         self._on_signature_area_click = on_signature_area_click
 
@@ -166,6 +169,10 @@ class MainView:
                     icon=ft.Icons.ZOOM_IN,
                     tooltip="Zoom +",
                     on_click=lambda _: self._invoke(self._on_zoom_in),
+                ),
+                ft.OutlinedButton(
+                    "Salva PDF firmato",
+                    on_click=lambda _: self._invoke(self._on_save_signed_pdf),
                 ),
                 ft.TextButton("Informazioni", on_click=lambda _: self.show_information()),
             ]

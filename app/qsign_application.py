@@ -11,6 +11,7 @@ from services.pdf.providers.pymupdf_renderer import (
     PyMuPDFRenderer,
 )
 from services.pdf.providers.pymupdf_provider import PyMuPDFProvider
+from services.pdf.providers.pymupdf_signature_writer import PyMuPDFSignatureWriter
 from services.templates.template_repository import FilesystemTemplateRepository
 
 if TYPE_CHECKING:
@@ -30,11 +31,13 @@ class QSignApplication:
         self._logger.info("Starting QSign desktop shell")
         renderer = PyMuPDFRenderer(logger=self._logger)
         pdf_provider = PyMuPDFProvider(logger=self._logger)
+        signature_writer = PyMuPDFSignatureWriter(logger=self._logger)
         anchor_detector = AnchorDetector(logger=self._logger)
         template_repository = FilesystemTemplateRepository("templates")
         pdf_service = PDFService(
             backend=PyMuPDFDocumentBackend(renderer),
             renderer=renderer,
+            signature_writer=signature_writer,
             logger=self._logger,
         )
         view = MainView(page=page)
@@ -53,6 +56,7 @@ class QSignApplication:
             on_next=controller.next_page,
             on_zoom_in=controller.zoom_in,
             on_zoom_out=controller.zoom_out,
+            on_save_signed_pdf=controller.save_signed_pdf,
             on_manual_signature_rect=controller.set_manual_signature_rectangle,
             on_signature_area_click=controller.open_signature_dialog,
         )

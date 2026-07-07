@@ -6,7 +6,8 @@ from models.pdf_document import PDFDocument, PageSize
 from services.logging.logging_service import LoggingService
 from services.pdf.pdf_document import PDFDocumentBackend
 from services.pdf.pdf_renderer import PDFRenderer, RenderedPage
-from services.pdf.pdf_signature import SignatureArea
+from services.pdf.pdf_signature import SignatureArea, VisiblePDFSignatureWriter
+from services.signature.signature_service import CapturedSignature
 
 
 class PDFService:
@@ -17,10 +18,14 @@ class PDFService:
         backend: PDFDocumentBackend,
         logger: LoggingService,
         renderer: PDFRenderer | None = None,
+        signature_writer: VisiblePDFSignatureWriter | None = None,
+        signed_output_directory: str | Path = Path("dist") / "signed",
     ) -> None:
         self._backend = backend
         self._logger = logger
         self._renderer = renderer
+        self._signature_writer = signature_writer
+        self._signed_output_directory = Path(signed_output_directory)
         self._document: PDFDocument | None = None
 
     @property
@@ -96,6 +101,35 @@ class PDFService:
     def sign_pdf(self, certificate_id: str) -> None:
         raise NotImplementedError("PAdES signing is planned for Milestone 5")
 
+    def save_signed_preview(
+        self,
+        signature: CapturedSignature,
+        area: SignatureArea,
+        destination: str | Path | None = None,
+    ) -> Path:
+        """Save a PDF copy with the visible captured signature applied."""
+        document = self._require_document()
+        if self._signature_writer is None:
+            raise RuntimeError("No visible PDF signature writer has been configured")
+
+        destination_path = (
+            Path(destination)
+            if destination is not None
+            else self._default_signed_preview_path(document.path)
+        )
+        self._signature_writer.save_with_visible_signature(
+            source=document.path,
+            destination=destination_path,
+            signature=signature,
+            area=area,
+        )
+        self._logger.info(
+            "Signed PDF preview saved",
+            source=str(document.path),
+            destination=str(destination_path),
+        )
+        return destination_path
+
     def render_page(self, page_index: int, scale: float = 1.0) -> RenderedPage:
         document = self._require_document()
         if self._renderer is None:
@@ -106,3 +140,6 @@ class PDFService:
         if self._document is None or not self._document.loaded:
             raise RuntimeError("No PDF document is open")
         return self._document
+
+    def _default_signed_preview_path(self, source: Path) -> Path:
+        return self._signed_output_directory / f"{source.stem}_signed.pdf"

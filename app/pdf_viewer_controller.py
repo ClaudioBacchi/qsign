@@ -17,6 +17,7 @@ from services.anchors.anchor_models import (
 )
 from services.pdf.pdf_service import PDFService
 from services.pdf.pdf_provider import PdfProvider
+from services.pdf.pdf_signature import SignatureArea
 from services.signature.signature_service import CapturedSignature
 from services.templates.template_repository import TemplateRepository
 
@@ -88,6 +89,8 @@ class PDFViewerView(Protocol):
     def clear_document(self) -> None: ...
 
     def show_error(self, message: str) -> None: ...
+
+    def show_status(self, message: str) -> None: ...
 
 
 @dataclass(slots=True)
@@ -447,6 +450,38 @@ class PDFViewerController:
             media_type=signature.media_type,
         )
         self._render_current_page()
+
+    def save_signed_pdf(self) -> None:
+        if self._pdf_service.current_document is None:
+            self._view.show_error("Nessun PDF aperto")
+            return
+        if self._signature_rectangle is None or self._signature_page_index is None:
+            self._view.show_error("Nessun rettangolo firma disponibile")
+            return
+        if self._captured_signature is None:
+            self._view.show_error("Nessuna firma acquisita")
+            return
+
+        area = SignatureArea(
+            page_index=self._signature_page_index,
+            x=self._signature_rectangle.left,
+            y=self._signature_rectangle.top,
+            width=self._signature_rectangle.width,
+            height=self._signature_rectangle.height,
+        )
+        try:
+            destination = self._pdf_service.save_signed_preview(
+                self._captured_signature,
+                area,
+            )
+        except Exception as error:
+            self._logger.exception("Unable to save signed PDF preview")
+            self._view.show_error(str(error))
+            return
+
+        self._workflow_status = f"PDF firmato salvato: {destination}"
+        self._logger.info("Signed PDF preview requested", destination=str(destination))
+        self._view.show_status(f"PDF firmato salvato: {destination}")
 
     def save_manual_template(self) -> None:
         if self._canonical_document is None or self._signature_rectangle is None:

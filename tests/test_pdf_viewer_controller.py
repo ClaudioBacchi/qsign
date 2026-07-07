@@ -32,6 +32,7 @@ class FakeViewer:
         ] = []
         self.cleared = False
         self.errors: list[str] = []
+        self.statuses: list[str] = []
         self.manual_mode = False
         self.save_callback = None
 
@@ -66,11 +67,22 @@ class FakeViewer:
     def show_error(self, message: str) -> None:
         self.errors.append(message)
 
+    def show_status(self, message: str) -> None:
+        self.statuses.append(message)
+
     def set_manual_signature_mode(self, enabled: bool) -> None:
         self.manual_mode = enabled
 
     def ask_save_template(self, on_confirm) -> None:
         self.save_callback = on_confirm
+
+    def open_signature_dialog(self, on_confirm, on_clear, on_cancel) -> None:
+        on_confirm(
+            CapturedSignature(
+                content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                media_type="image/svg+xml",
+            )
+        )
 
 
 class PDFViewerControllerTests(unittest.TestCase):
@@ -529,6 +541,50 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(overlays[0].width, 80)
         self.assertEqual(overlays[0].height, 40)
         self.assertTrue(self.view.manual_mode)
+
+    def test_save_signed_pdf_requires_captured_signature(self) -> None:
+        self.controller.open_document("sample.pdf")
+        self.controller.set_manual_signature_rectangle(
+            left=20,
+            top=30,
+            width=80,
+            height=40,
+            image_width=200,
+            image_height=200,
+        )
+
+        self.controller.save_signed_pdf()
+
+        self.assertEqual(self.view.errors[-1], "Nessuna firma acquisita")
+        self.service.save_signed_preview.assert_not_called()
+
+    def test_save_signed_pdf_uses_current_signature_rectangle(self) -> None:
+        self.service.save_signed_preview.return_value = Path("dist/signed/sample_signed.pdf")
+        self.controller.open_document("sample.pdf")
+        self.controller.set_manual_signature_rectangle(
+            left=20,
+            top=30,
+            width=80,
+            height=40,
+            image_width=200,
+            image_height=200,
+        )
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        self.controller.apply_mouse_signature(signature)
+
+        self.controller.save_signed_pdf()
+
+        saved_signature, area = self.service.save_signed_preview.call_args.args
+        self.assertEqual(saved_signature, signature)
+        self.assertEqual(area.page_index, 0)
+        self.assertEqual(area.x, 20)
+        self.assertEqual(area.y, 30)
+        self.assertEqual(area.width, 80)
+        self.assertEqual(area.height, 40)
+        self.assertIn("PDF firmato salvato", self.view.statuses[-1])
 
     def test_learned_manual_template_prefers_current_anchor_over_fixed_page(self) -> None:
         self.controller = PDFViewerController(
