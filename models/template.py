@@ -82,6 +82,7 @@ class PlacementRule:
     width: float
     height: float
     required: bool = True
+    page_index: int | None = None
 
     def __post_init__(self) -> None:
         if not self.placement_id:

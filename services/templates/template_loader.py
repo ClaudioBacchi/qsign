@@ -89,6 +89,7 @@ def template_from_dict(payload: dict[str, Any], checksum: str = "") -> Template:
                 width=float(item.get("width", 0.0)),
                 height=float(item.get("height", 0.0)),
                 required=bool(item.get("required", True)),
+                page_index=_optional_int(item.get("page_index")),
             )
             for item in _objects(payload.get("placement_rules", []), "placement_rules")
         ),
