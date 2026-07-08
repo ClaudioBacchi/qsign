@@ -1,5 +1,6 @@
 """Presentation tests for renderer output conversion."""
 
+import asyncio
 import base64
 import unittest
 from types import SimpleNamespace
@@ -34,6 +35,14 @@ class FakePage:
         self.dialog_closed = True
 
     def launch_url(self, url: str) -> None:
+        self.launched_urls.append(url)
+
+
+class FakeAsyncLaunchPage(FakePage):
+    def run_task(self, handler: object, *args: object, **kwargs: object) -> None:
+        asyncio.run(handler(*args, **kwargs))
+
+    async def launch_url(self, url: str) -> None:
         self.launched_urls.append(url)
 
 
@@ -76,6 +85,14 @@ class MainViewTests(unittest.TestCase):
             view._viewer_placeholder.content.content.src,
             "images/logo_qsign_grande.png",
         )
+
+        view._viewer_placeholder.on_tap(None)
+
+        self.assertEqual(page.launched_urls, ["https://queensrl.net"])
+
+    def test_logo_click_uses_flet_task_for_async_launch_url(self) -> None:
+        page = FakeAsyncLaunchPage()
+        view = MainView(page)
 
         view._viewer_placeholder.on_tap(None)
 

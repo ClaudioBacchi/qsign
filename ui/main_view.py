@@ -1,6 +1,7 @@
 """Minimal Flet shell for Milestone 1."""
 
 import base64
+import inspect
 import locale
 import re
 import sys
@@ -745,7 +746,15 @@ class MainView:
         self._page.show_dialog(dialog)
 
     def _open_queen_site(self, _: object | None = None) -> None:
+        if hasattr(self._page, "run_task"):
+            self._page.run_task(self._launch_queen_site)
+            return
         self._page.launch_url("https://queensrl.net")
+
+    async def _launch_queen_site(self) -> None:
+        result = self._page.launch_url("https://queensrl.net")
+        if inspect.isawaitable(result):
+            await result
 
     def _configure_window_icon(self) -> None:
         if sys.platform != "win32":
