@@ -4,6 +4,7 @@ import base64
 import unittest
 from types import SimpleNamespace
 
+from app.services.certificate_service import CertificateInfo
 from models.document import Rectangle
 from ui.main_view import MainView
 
@@ -13,6 +14,8 @@ class FakePage:
         self.controls: list[object] = []
         self.services: list[object] = []
         self.updated = False
+        self.launched_urls: list[str] = []
+        self.pop_count = 0
 
     def add(self, *controls: object) -> None:
         self.controls.extend(controls)
@@ -25,9 +28,13 @@ class FakePage:
 
     def pop_dialog(self) -> None:
         self.dialog_popped = True
+        self.pop_count += 1
 
     def close_dialog(self) -> None:
         self.dialog_closed = True
+
+    def launch_url(self, url: str) -> None:
+        self.launched_urls.append(url)
 
 
 class MainViewTests(unittest.TestCase):
@@ -54,7 +61,57 @@ class MainViewTests(unittest.TestCase):
         self.assertTrue(image.visible)
         self.assertTrue(view._pdf_stack.visible)
         self.assertFalse(view._viewer_placeholder.visible)
+        self.assertFalse(view._home_view.visible)
+        self.assertTrue(view._document_viewer.visible)
         self.assertTrue(page.updated)
+
+    def test_initial_placeholder_is_clickable_qsign_logo(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        self.assertTrue(view._viewer_placeholder.visible)
+        self.assertTrue(view._home_view.visible)
+        self.assertFalse(view._document_viewer.visible)
+        self.assertEqual(
+            view._viewer_placeholder.content.content.src,
+            "images/logo_qsign_grande.png",
+        )
+
+        view._viewer_placeholder.on_tap(None)
+
+        self.assertEqual(page.launched_urls, ["https://queensrl.net"])
+
+    def test_clear_document_returns_to_centered_white_logo_home(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=200,
+            image_height=300,
+            page_number=1,
+            page_count=1,
+            zoom=1.0,
+        )
+
+        view.clear_document()
+
+        self.assertTrue(view._home_view.visible)
+        self.assertTrue(view._viewer_placeholder.visible)
+        self.assertFalse(view._document_viewer.visible)
+        self.assertEqual(view._home_view.bgcolor, view._ft.Colors.WHITE)
+        self.assertEqual(view._home_view.alignment, view._ft.Alignment(0, 0))
+        self.assertEqual(view._viewer_layers.fit, view._ft.StackFit.EXPAND)
+
+    def test_viewer_background_is_gray_behind_loaded_pdfs(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.build()
+
+        root_column = page.controls[0]
+        viewer = root_column.controls[1]
+        self.assertEqual(viewer.bgcolor, view._ft.Colors.GREY_200)
 
     def test_anchor_overlay_is_rendered_above_pdf_image(self) -> None:
         page = FakePage()
@@ -338,6 +395,28 @@ class MainViewTests(unittest.TestCase):
 
         self.assertEqual(page.dialog.title.value, "QSign")
 
+    def test_certificate_child_dialog_replaces_preferences_dialog(self) -> None:
+        page = FakePage()
+        view = MainView(page, certificate_service=FakeCertificateService())
+
+        view.show_certificate_preferences()
+        page.dialog.content.content.controls[3].controls[0].on_click(None)
+
+        self.assertEqual(page.dialog.title.value, "Genera certificato")
+        self.assertEqual(page.pop_count, 1)
+
+    def test_certificate_delete_asks_for_confirmation(self) -> None:
+        page = FakePage()
+        service = FakeCertificateService()
+        view = MainView(page, certificate_service=service)
+
+        view.show_certificate_preferences()
+        page.dialog.content.content.controls[3].controls[3].on_click(None)
+
+        self.assertEqual(page.dialog.title.value, "Cancella certificato")
+        page.dialog.actions[1].on_click(None)
+        self.assertEqual(service.deleted_thumbprints, ["AABB"])
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -345,3 +424,22 @@ if __name__ == "__main__":
 
 def _event(x: float, y: float) -> SimpleNamespace:
     return SimpleNamespace(local_position=SimpleNamespace(x=x, y=y))
+
+
+class FakeCertificateService:
+    def __init__(self) -> None:
+        self.deleted_thumbprints: list[str] = []
+
+    def get_active_certificate(self) -> CertificateInfo:
+        return CertificateInfo(
+            name="Claudio Bacchi",
+            type="Store Windows - chiave privata",
+            valid_until="2029-07-08",
+            thumbprint="AABB",
+        )
+
+    def list_certificates(self) -> tuple[CertificateInfo, ...]:
+        return (self.get_active_certificate(),)
+
+    def delete_certificate(self, thumbprint: str) -> None:
+        self.deleted_thumbprints.append(thumbprint)

@@ -1,6 +1,7 @@
 """Desktop entry point for QSign."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 
 def run() -> None:
@@ -10,7 +11,8 @@ def run() -> None:
     from app.qsign_application import QSignApplication
 
     target: Callable[[ft.Page], None] = QSignApplication().main
-    ft.run(main=target)
+    project_root = Path(__file__).resolve().parent.parent
+    ft.run(main=target, assets_dir=str(project_root / "resources"))
 
 
 if __name__ == "__main__":

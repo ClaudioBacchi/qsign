@@ -584,6 +584,8 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(area.y, 30)
         self.assertEqual(area.width, 80)
         self.assertEqual(area.height, 40)
+        self.service.close_document.assert_called_once()
+        self.assertTrue(self.view.cleared)
         self.assertIn("PDF firmato salvato", self.view.statuses[-1])
 
     def test_learned_manual_template_prefers_current_anchor_over_fixed_page(self) -> None:

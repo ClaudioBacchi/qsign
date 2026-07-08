@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 from app.pdf_viewer_controller import PDFViewerController
+from app.services.certificate_service import CertificateService
 from services.anchors.anchor_detector import AnchorDetector
 from services.logging.logging_service import LoggingService
 from services.pdf.pdf_service import PDFService
@@ -34,13 +35,14 @@ class QSignApplication:
         signature_writer = PyMuPDFSignatureWriter(logger=self._logger)
         anchor_detector = AnchorDetector(logger=self._logger)
         template_repository = FilesystemTemplateRepository("templates")
+        certificate_service = CertificateService()
         pdf_service = PDFService(
             backend=PyMuPDFDocumentBackend(renderer),
             renderer=renderer,
             signature_writer=signature_writer,
             logger=self._logger,
         )
-        view = MainView(page=page)
+        view = MainView(page=page, certificate_service=certificate_service)
         controller = PDFViewerController(
             pdf_service=pdf_service,
             view=view,

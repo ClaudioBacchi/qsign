@@ -481,6 +481,18 @@ class PDFViewerController:
 
         self._workflow_status = f"PDF firmato salvato: {destination}"
         self._logger.info("Signed PDF preview requested", destination=str(destination))
+        if self._pdf_service.current_document is not None:
+            self._pdf_service.close_document()
+        self.state = PDFViewerState()
+        self._canonical_document = None
+        self._anchor_matches = ()
+        self._signature_anchor_match = None
+        self._signature_rectangle = None
+        self._signature_page_index = None
+        self._captured_signature = None
+        self._recognized_template = None
+        self._view.set_manual_signature_mode(False)
+        self._view.clear_document()
         self._view.show_status(f"PDF firmato salvato: {destination}")
 
     def save_manual_template(self) -> None:
