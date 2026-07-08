@@ -50,3 +50,17 @@ class VisiblePDFSignatureWriter(ABC):
         area: SignatureArea,
     ) -> None:
         """Create a destination PDF with the visible signature applied."""
+
+
+class DigitalPDFSignatureWriter(ABC):
+    """Port for applying a certificate-backed PDF signature."""
+
+    @abstractmethod
+    def sign_pdf(
+        self,
+        source: Path,
+        destination: Path,
+        area: SignatureArea,
+        field_name: str = "Signature1",
+    ) -> None:
+        """Create a digitally signed PDF copy."""

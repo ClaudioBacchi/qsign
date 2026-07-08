@@ -2,11 +2,16 @@
 
 from pathlib import Path
 import re
+import tempfile
 
 import pymupdf
 
 from services.logging.logging_service import LoggingService
-from services.pdf.pdf_signature import SignatureArea, VisiblePDFSignatureWriter
+from services.pdf.pdf_signature import (
+    DigitalPDFSignatureWriter,
+    SignatureArea,
+    VisiblePDFSignatureWriter,
+)
 from services.signature.signature_service import CapturedSignature
 
 
@@ -16,8 +21,13 @@ class PyMuPDFSignatureWriter(VisiblePDFSignatureWriter):
     _SIGNATURE_VIEWBOX_WIDTH = 420.0
     _SIGNATURE_VIEWBOX_HEIGHT = 180.0
 
-    def __init__(self, logger: LoggingService) -> None:
+    def __init__(
+        self,
+        logger: LoggingService,
+        digital_signature_writer: DigitalPDFSignatureWriter | None = None,
+    ) -> None:
         self._logger = logger
+        self._digital_signature_writer = digital_signature_writer
 
     def save_with_visible_signature(
         self,
@@ -39,6 +49,12 @@ class PyMuPDFSignatureWriter(VisiblePDFSignatureWriter):
             raise ValueError("Captured signature does not contain drawable strokes")
 
         destination.parent.mkdir(parents=True, exist_ok=True)
+        visible_destination = destination
+        temporary_directory: tempfile.TemporaryDirectory[str] | None = None
+        if self._digital_signature_writer is not None:
+            temporary_directory = tempfile.TemporaryDirectory(prefix="qsign-visible-")
+            visible_destination = Path(temporary_directory.name) / destination.name
+
         document = pymupdf.open(source)
         try:
             if not 0 <= area.page_index < document.page_count:
@@ -68,9 +84,20 @@ class PyMuPDFSignatureWriter(VisiblePDFSignatureWriter):
                 shape.commit()
             finally:
                 del page
-            document.save(destination)
+            document.save(visible_destination)
         finally:
             document.close()
+
+        try:
+            if self._digital_signature_writer is not None:
+                self._digital_signature_writer.sign_pdf(
+                    source=visible_destination,
+                    destination=destination,
+                    area=area,
+                )
+        finally:
+            if temporary_directory is not None:
+                temporary_directory.cleanup()
 
         self._logger.info(
             "Visible signature written to PDF",

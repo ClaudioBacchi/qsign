@@ -13,6 +13,9 @@ from services.pdf.providers.pymupdf_renderer import (
 )
 from services.pdf.providers.pymupdf_provider import PyMuPDFProvider
 from services.pdf.providers.pymupdf_signature_writer import PyMuPDFSignatureWriter
+from services.pdf.providers.pyhanko_digital_signature_writer import (
+    PyHankoDigitalSignatureWriter,
+)
 from services.templates.template_repository import FilesystemTemplateRepository
 
 if TYPE_CHECKING:
@@ -32,10 +35,18 @@ class QSignApplication:
         self._logger.info("Starting QSign desktop shell")
         renderer = PyMuPDFRenderer(logger=self._logger)
         pdf_provider = PyMuPDFProvider(logger=self._logger)
-        signature_writer = PyMuPDFSignatureWriter(logger=self._logger)
         anchor_detector = AnchorDetector(logger=self._logger)
         template_repository = FilesystemTemplateRepository("templates")
         certificate_service = CertificateService()
+        digital_signature_writer = PyHankoDigitalSignatureWriter(
+            certificate_service=certificate_service,
+            logger=self._logger,
+            metadata_provider=certificate_service.get_signature_metadata,
+        )
+        signature_writer = PyMuPDFSignatureWriter(
+            logger=self._logger,
+            digital_signature_writer=digital_signature_writer,
+        )
         pdf_service = PDFService(
             backend=PyMuPDFDocumentBackend(renderer),
             renderer=renderer,

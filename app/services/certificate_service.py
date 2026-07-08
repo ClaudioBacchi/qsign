@@ -22,6 +22,18 @@ class CertificateInfo:
     thumbprint: str
 
 
+@dataclass(frozen=True, slots=True)
+class SignatureMetadata:
+    reason: str
+    location: str
+    contact_info: str
+
+
+DEFAULT_SIGNATURE_REASON = "SorveglianzaSanitaria"
+DEFAULT_SIGNATURE_LOCATION = ""
+DEFAULT_SIGNATURE_CONTACT_INFO = ""
+
+
 class CertificateService:
     """Read and update the active certificate from the Windows user store."""
 
@@ -71,6 +83,63 @@ finally {
                 return certificate
         return None
 
+    def get_signature_reason(self) -> str:
+        return self.get_signature_metadata().reason
+
+    def set_signature_reason(self, reason: str) -> None:
+        self.set_signature_metadata(reason=reason)
+
+    def get_signature_metadata(self) -> SignatureMetadata:
+        payload = self._read_preferences()
+        thumbprint = self._normalize_thumbprint(self._read_active_thumbprint())
+        metadata = payload.get("signature_metadata")
+        if thumbprint and isinstance(metadata, dict):
+            certificate_metadata = metadata.get(thumbprint)
+            if isinstance(certificate_metadata, dict):
+                return SignatureMetadata(
+                    reason=str(
+                        certificate_metadata.get("reason") or DEFAULT_SIGNATURE_REASON
+                    ).strip()
+                    or DEFAULT_SIGNATURE_REASON,
+                    location=str(
+                        certificate_metadata.get("location")
+                        or DEFAULT_SIGNATURE_LOCATION
+                    ).strip(),
+                    contact_info=str(
+                        certificate_metadata.get("contact_info")
+                        or DEFAULT_SIGNATURE_CONTACT_INFO
+                    ).strip(),
+                )
+        return SignatureMetadata(
+            reason=self._legacy_signature_reason(payload),
+            location=str(payload.get("signature_location") or "").strip(),
+            contact_info=str(payload.get("signature_contact_info") or "").strip(),
+        )
+
+    def set_signature_metadata(
+        self,
+        reason: str,
+        location: str = "",
+        contact_info: str = "",
+    ) -> None:
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            raise CertificateServiceError("Motivo firma obbligatorio")
+        thumbprint = self._normalize_thumbprint(self._read_active_thumbprint())
+        if not thumbprint:
+            raise CertificateServiceError("Selezionare un certificato attivo")
+        payload = self._read_preferences()
+        all_metadata = payload.get("signature_metadata")
+        if not isinstance(all_metadata, dict):
+            all_metadata = {}
+        all_metadata[thumbprint] = {
+            "reason": normalized_reason,
+            "location": location.strip(),
+            "contact_info": contact_info.strip(),
+        }
+        payload["signature_metadata"] = all_metadata
+        self._write_preferences(payload)
+
     def set_active_certificate(self, thumbprint: str) -> None:
         normalized = self._normalize_thumbprint(thumbprint)
         if not normalized:
@@ -110,6 +179,48 @@ finally {
         self._command_runner(script)
         if self._normalize_thumbprint(self._read_active_thumbprint()) == normalized:
             self._clear_active_thumbprint()
+
+    def export_active_certificate_pfx(
+        self, destination: str | Path, password: str
+    ) -> CertificateInfo:
+        if not password:
+            raise CertificateServiceError("Password esportazione certificato obbligatoria")
+        certificate = self.get_active_certificate()
+        if certificate is None:
+            raise CertificateServiceError("Nessun certificato attivo selezionato")
+        destination_path = Path(destination)
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        script = (
+            "$ErrorActionPreference = 'Stop'\n"
+            f"$thumbprint = {self._ps_string(certificate.thumbprint)}\n"
+            f"$destination = {self._ps_string(str(destination_path))}\n"
+            f"$password = {self._ps_string(password)}\n"
+            r"""
+$store = [System.Security.Cryptography.X509Certificates.X509Store]::new("My", "CurrentUser")
+$store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+try {
+    $selected = $store.Certificates |
+        Where-Object { ($_.Thumbprint -replace '\s', '') -eq $thumbprint } |
+        Select-Object -First 1
+    if ($null -eq $selected) {
+        throw "Certificato non trovato nello Store Windows"
+    }
+    if (-not $selected.HasPrivateKey) {
+        throw "Il certificato selezionato non contiene una chiave privata"
+    }
+    $bytes = $selected.Export(
+        [System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx,
+        $password
+    )
+    [System.IO.File]::WriteAllBytes($destination, $bytes)
+}
+finally {
+    $store.Close()
+}
+"""
+        )
+        self._command_runner(script)
+        return certificate
 
     def generate_self_signed(
         self,
@@ -237,44 +348,51 @@ if ($null -eq $selected) {
         return certificate
 
     def _read_active_thumbprint(self) -> str:
+        payload = self._read_preferences()
+        return str(payload.get("active_certificate_thumbprint", ""))
+
+    def _read_preferences(self) -> dict[str, Any]:
         if not self._preferences_path.is_file():
-            return ""
+            return {}
         try:
             payload = json.loads(self._preferences_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return ""
-        return str(payload.get("active_certificate_thumbprint", ""))
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
-    def _write_active_thumbprint(self, thumbprint: str) -> None:
-        payload: dict[str, Any] = {}
-        if self._preferences_path.is_file():
-            try:
-                existing = json.loads(self._preferences_path.read_text(encoding="utf-8"))
-                if isinstance(existing, dict):
-                    payload = existing
-            except (OSError, json.JSONDecodeError):
-                payload = {}
-        payload["active_certificate_thumbprint"] = self._normalize_thumbprint(thumbprint)
+    def _write_preferences(self, payload: dict[str, Any]) -> None:
         self._preferences_path.parent.mkdir(parents=True, exist_ok=True)
         self._preferences_path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+    def _write_active_thumbprint(self, thumbprint: str) -> None:
+        payload = self._read_preferences()
+        payload["active_certificate_thumbprint"] = self._normalize_thumbprint(thumbprint)
+        self._write_preferences(payload)
 
     def _clear_active_thumbprint(self) -> None:
         if not self._preferences_path.is_file():
             return
-        try:
-            existing = json.loads(self._preferences_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            existing = {}
-        payload = existing if isinstance(existing, dict) else {}
+        thumbprint = self._normalize_thumbprint(self._read_active_thumbprint())
+        payload = self._read_preferences()
         payload.pop("active_certificate_thumbprint", None)
-        self._preferences_path.parent.mkdir(parents=True, exist_ok=True)
-        self._preferences_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        reasons = payload.get("signature_reasons")
+        if thumbprint and isinstance(reasons, dict):
+            reasons.pop(thumbprint, None)
+            if reasons:
+                payload["signature_reasons"] = reasons
+            else:
+                payload.pop("signature_reasons", None)
+        metadata = payload.get("signature_metadata")
+        if thumbprint and isinstance(metadata, dict):
+            metadata.pop(thumbprint, None)
+            if metadata:
+                payload["signature_metadata"] = metadata
+            else:
+                payload.pop("signature_metadata", None)
+        self._write_preferences(payload)
 
     def _run_json(self, script: str) -> Any:
         output = self._command_runner(script).strip()
@@ -286,6 +404,19 @@ if ($null -eq $selected) {
             raise CertificateServiceError(
                 "Risposta non valida dallo Store certificati di Windows"
             ) from error
+
+    @staticmethod
+    def _legacy_signature_reason(payload: dict[str, Any]) -> str:
+        thumbprint = CertificateService._normalize_thumbprint(
+            str(payload.get("active_certificate_thumbprint") or "")
+        )
+        reasons = payload.get("signature_reasons")
+        if thumbprint and isinstance(reasons, dict):
+            reason = str(reasons.get(thumbprint) or "").strip()
+            if reason:
+                return reason
+        reason = str(payload.get("signature_reason") or "").strip()
+        return reason or DEFAULT_SIGNATURE_REASON
 
     @staticmethod
     def _run_powershell(script: str) -> str:

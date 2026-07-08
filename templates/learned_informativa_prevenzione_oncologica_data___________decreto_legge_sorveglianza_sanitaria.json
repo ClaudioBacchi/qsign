@@ -1,0 +1,123 @@
+{
+  "schema_version": "1.0",
+  "template_id": "learned_informativa_prevenzione_oncologica_data___________decreto_legge_sorveglianza_sanitaria",
+  "code": "LEARNED_INFORMATIVA_PREVENZIONE_ONCOLOGICA_DATA___________DECRETO_LEGGE_SORVEGLIANZA_SANITARIA",
+  "name": "Template provvisorio learned_informativa_prevenzione_oncologica_data___________decreto_legge_sorveglianza_sanitaria",
+  "description": "Template creato dal primo flusso manuale QSign.",
+  "document_type": "manual_signature_flow",
+  "version": "0.1.0",
+  "state": "draft",
+  "priority": 5,
+  "document_rules": [],
+  "recognition_rules": [
+    {
+      "rule_id": "manual-filename-stem",
+      "rule_type": "literal",
+      "expression": "infsceening_000000000052050_GHINASSI_ENNIO_MASSIMO(2)",
+      "scope": "document",
+      "required": false,
+      "weight": 0.25
+    },
+    {
+      "rule_id": "manual-recognition-phrase",
+      "rule_type": "literal",
+      "expression": "Salute e Lavoro Società Coopera va Ambulatori Via Meucci, 18 - 47122 Forlì (FC) Tel. 0543 798337 Via G. Per cari, 2/A - 47035",
+      "scope": "document",
+      "required": false,
+      "weight": 6.0
+    },
+    {
+      "rule_id": "manual-structural-signature",
+      "rule_type": "literal",
+      "expression": "informativa prevenzione oncologica data__________ decreto legge sorveglianza sanitaria comma riveste ruolo fondamentale tutela nostra recen aggiornamen",
+      "scope": "document",
+      "required": true,
+      "weight": 10.0
+    },
+    {
+      "rule_id": "manual-keyword-1",
+      "rule_type": "literal",
+      "expression": "informativa",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-2",
+      "rule_type": "literal",
+      "expression": "prevenzione",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-3",
+      "rule_type": "literal",
+      "expression": "oncologica",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-4",
+      "rule_type": "literal",
+      "expression": "data__________",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-5",
+      "rule_type": "literal",
+      "expression": "decreto",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-6",
+      "rule_type": "literal",
+      "expression": "legge",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-7",
+      "rule_type": "literal",
+      "expression": "sorveglianza",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-8",
+      "rule_type": "literal",
+      "expression": "sanitaria",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    }
+  ],
+  "anchor_rules": [],
+  "placement_rules": [
+    {
+      "placement_id": "manual-signature",
+      "role": "signer",
+      "anchor_id": "manual",
+      "side": "manual",
+      "alignment": "manual",
+      "x_offset": 165.5,
+      "y_offset": 758.0,
+      "width": 172.0,
+      "height": 55.0,
+      "page_index": 0,
+      "required": true
+    }
+  ],
+  "settings": {
+    "recognition_threshold": 80,
+    "ambiguity_margin": 5,
+    "normalization_profile": "default"
+  }
+}

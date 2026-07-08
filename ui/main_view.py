@@ -91,7 +91,7 @@ class MainView:
         self._document_name = ft.Text("Nessun documento")
         self._page_count = ft.Text("Pagina — / —")
         self._zoom = ft.Text("Zoom: 100%")
-        self._document_status = ft.Text("Stato: pronto")
+        self._document_status = ft.Text(self._certificate_status_text())
         self._viewer_placeholder = ft.GestureDetector(
             content=ft.Container(
                 content=ft.Image(
@@ -309,6 +309,21 @@ class MainView:
         self._document_status.value = f"Stato: {message}"
         self._page.update()
 
+    def show_certificate_status(self) -> None:
+        self._document_status.value = self._certificate_status_text()
+        self._page.update()
+
+    def _certificate_status_text(self) -> str:
+        if self._certificate_service is None:
+            return "Certificato: non disponibile"
+        try:
+            certificate = self._certificate_service.get_active_certificate()
+        except CertificateServiceError:
+            return "Certificato: errore"
+        if certificate is None:
+            return "Certificato: nessun certificato attivo"
+        return f"Certificato: {certificate.name} attivo"
+
     def clear_document(self) -> None:
         self._pdf_image.visible = False
         self._pdf_stack.visible = False
@@ -322,7 +337,7 @@ class MainView:
         self._document_name.value = "Nessun documento"
         self._page_count.value = "Pagina — / —"
         self._zoom.value = "Zoom: 100%"
-        self.show_status("pronto")
+        self.show_certificate_status()
 
     def show_error(self, message: str) -> None:
         self.show_status(f"errore — {message}")
@@ -443,7 +458,11 @@ class MainView:
         except CertificateServiceError as error:
             self.show_error(str(error))
             certificate = None
-
+        signature_metadata = (
+            self._certificate_service.get_signature_metadata()
+            if certificate is not None
+            else None
+        )
         dialog = ft.AlertDialog(
             title=ft.Text("CERTIFICATO"),
             content=ft.Container(
@@ -455,6 +474,36 @@ class MainView:
                             certificate.name
                             if certificate is not None
                             else "<Nessun certificato selezionato>"
+                        ),
+                        ft.Text(
+                            "Motivo firma: "
+                            + (
+                                signature_metadata.reason
+                                if signature_metadata is not None
+                                else "-"
+                            )
+                        ),
+                        ft.Text(
+                            "Luogo: "
+                            + (
+                                signature_metadata.location
+                                if (
+                                    signature_metadata is not None
+                                    and signature_metadata.location
+                                )
+                                else "Non disponibile"
+                            )
+                        ),
+                        ft.Text(
+                            "Contatto firmatario: "
+                            + (
+                                signature_metadata.contact_info
+                                if (
+                                    signature_metadata is not None
+                                    and signature_metadata.contact_info
+                                )
+                                else "Non disponibile"
+                            )
                         ),
                         ft.Divider(),
                         ft.Row(
@@ -568,6 +617,19 @@ class MainView:
             password=True,
             can_reveal_password=True,
         )
+        signature_metadata = self._certificate_service.get_signature_metadata()
+        signature_reason = ft.TextField(
+            label="Motivo firma",
+            value=signature_metadata.reason,
+        )
+        signature_location = ft.TextField(
+            label="Luogo",
+            value=signature_metadata.location,
+        )
+        signature_contact = ft.TextField(
+            label="Contatto firmatario",
+            value=signature_metadata.contact_info,
+        )
 
         def generate(_: object) -> None:
             try:
@@ -578,12 +640,17 @@ class MainView:
                     password.value or "",
                     selected_valid_until["value"].isoformat(),
                 )
+                self._certificate_service.set_signature_metadata(
+                    reason=signature_reason.value or "",
+                    location=signature_location.value or "",
+                    contact_info=signature_contact.value or "",
+                )
             except CertificateServiceError as error:
                 self.show_error(str(error))
                 return
             self._close_dialog()
             self.show_certificate_preferences()
-            self.show_status("certificato attivo aggiornato")
+            self.show_certificate_status()
 
         dialog = ft.AlertDialog(
             title=ft.Text("Genera certificato"),
@@ -606,6 +673,9 @@ class MainView:
                             vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
                         password,
+                        signature_reason,
+                        signature_location,
+                        signature_contact,
                     ],
                     tight=True,
                 ),
@@ -648,7 +718,7 @@ class MainView:
                 return
             self._close_dialog()
             self.show_certificate_preferences()
-            self.show_status("certificato attivo aggiornato")
+            self.show_certificate_status()
 
         dialog = ft.AlertDialog(
             title=ft.Text("Importa PFX"),
@@ -677,7 +747,7 @@ class MainView:
                 return
             self._close_dialog()
             self.show_certificate_preferences()
-            self.show_status("certificato cancellato")
+            self.show_certificate_status()
 
         dialog = ft.AlertDialog(
             title=ft.Text("Cancella certificato"),
@@ -710,7 +780,7 @@ class MainView:
                 return
             self._close_dialog()
             self.show_certificate_preferences()
-            self.show_status("certificato attivo aggiornato")
+            self.show_certificate_status()
 
         if certificates:
             controls = [

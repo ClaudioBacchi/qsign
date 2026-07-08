@@ -9,6 +9,7 @@ build/
 dist/
 release/
 logs/
+config/preferences.json
 *.pyc
 *.py[cod]
 *.egg-info/

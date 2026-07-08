@@ -5,7 +5,7 @@ import base64
 import unittest
 from types import SimpleNamespace
 
-from app.services.certificate_service import CertificateInfo
+from app.services.certificate_service import CertificateInfo, SignatureMetadata
 from models.document import Rectangle
 from ui.main_view import MainView
 
@@ -417,7 +417,7 @@ class MainViewTests(unittest.TestCase):
         view = MainView(page, certificate_service=FakeCertificateService())
 
         view.show_certificate_preferences()
-        page.dialog.content.content.controls[3].controls[0].on_click(None)
+        page.dialog.content.content.controls[6].controls[0].on_click(None)
 
         self.assertEqual(page.dialog.title.value, "Genera certificato")
         self.assertEqual(page.pop_count, 1)
@@ -428,11 +428,82 @@ class MainViewTests(unittest.TestCase):
         view = MainView(page, certificate_service=service)
 
         view.show_certificate_preferences()
-        page.dialog.content.content.controls[3].controls[3].on_click(None)
+        page.dialog.content.content.controls[6].controls[3].on_click(None)
 
         self.assertEqual(page.dialog.title.value, "Cancella certificato")
         page.dialog.actions[1].on_click(None)
         self.assertEqual(service.deleted_thumbprints, ["AABB"])
+
+    def test_certificate_preferences_show_signature_reason_summary(self) -> None:
+        page = FakePage()
+        service = FakeCertificateService()
+        view = MainView(page, certificate_service=service)
+
+        view.show_certificate_preferences()
+        labels = [
+            getattr(control, "value", "")
+            for control in page.dialog.content.content.controls
+        ]
+
+        self.assertIn("Motivo firma: SorveglianzaSanitaria", labels)
+        self.assertIn("Luogo: Forli", labels)
+        self.assertIn("Contatto firmatario: privacy@example.test", labels)
+
+    def test_certificate_status_bar_shows_active_certificate(self) -> None:
+        page = FakePage()
+        view = MainView(page, certificate_service=FakeCertificateService())
+
+        self.assertEqual(
+            view._document_status.value,
+            "Certificato: Claudio Bacchi attivo",
+        )
+
+    def test_certificate_preferences_do_not_show_global_signature_reason_editor(
+        self,
+    ) -> None:
+        page = FakePage()
+        service = FakeCertificateService()
+        view = MainView(page, certificate_service=service)
+
+        view.show_certificate_preferences()
+
+        labels = [
+            getattr(control, "value", "")
+            for control in page.dialog.content.content.controls
+        ]
+        self.assertNotIn("Metadati firma", labels)
+
+    def test_generate_certificate_dialog_saves_signature_reason_and_updates_status(
+        self,
+    ) -> None:
+        page = FakePage()
+        service = FakeCertificateService()
+        view = MainView(page, certificate_service=service)
+
+        view.show_certificate_preferences()
+        page.dialog.content.content.controls[6].controls[0].on_click(None)
+        generate_controls = page.dialog.content.content.controls
+        generate_controls[0].value = "Mario"
+        generate_controls[1].value = "Rossi"
+        generate_controls[4].value = "secret"
+        generate_controls[5].value = "Privacy"
+        generate_controls[6].value = "Cesena"
+        generate_controls[7].value = "contatto@example.test"
+        page.dialog.actions[1].on_click(None)
+
+        self.assertEqual(service.generated_names, [("Mario", "Rossi")])
+        self.assertEqual(
+            service.signature_metadata,
+            SignatureMetadata(
+                reason="Privacy",
+                location="Cesena",
+                contact_info="contatto@example.test",
+            ),
+        )
+        self.assertEqual(
+            view._document_status.value,
+            "Certificato: Claudio Bacchi attivo",
+        )
 
 
 if __name__ == "__main__":
@@ -446,6 +517,12 @@ def _event(x: float, y: float) -> SimpleNamespace:
 class FakeCertificateService:
     def __init__(self) -> None:
         self.deleted_thumbprints: list[str] = []
+        self.signature_metadata = SignatureMetadata(
+            reason="SorveglianzaSanitaria",
+            location="Forli",
+            contact_info="privacy@example.test",
+        )
+        self.generated_names: list[tuple[str, str]] = []
 
     def get_active_certificate(self) -> CertificateInfo:
         return CertificateInfo(
@@ -460,3 +537,39 @@ class FakeCertificateService:
 
     def delete_certificate(self, thumbprint: str) -> None:
         self.deleted_thumbprints.append(thumbprint)
+
+    def get_signature_reason(self) -> str:
+        return self.signature_metadata.reason
+
+    def set_signature_reason(self, reason: str) -> None:
+        self.signature_metadata = SignatureMetadata(
+            reason=reason,
+            location=self.signature_metadata.location,
+            contact_info=self.signature_metadata.contact_info,
+        )
+
+    def get_signature_metadata(self) -> SignatureMetadata:
+        return self.signature_metadata
+
+    def set_signature_metadata(
+        self,
+        reason: str,
+        location: str = "",
+        contact_info: str = "",
+    ) -> None:
+        self.signature_metadata = SignatureMetadata(
+            reason=reason,
+            location=location,
+            contact_info=contact_info,
+        )
+
+    def generate_self_signed(
+        self,
+        first_name: str,
+        last_name: str,
+        organization: str,
+        pfx_password: str,
+        valid_until: str | None = None,
+    ) -> CertificateInfo:
+        self.generated_names.append((first_name, last_name))
+        return self.get_active_certificate()

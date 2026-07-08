@@ -1,0 +1,123 @@
+{
+  "schema_version": "1.0",
+  "template_id": "learned_modalit_consultazione_idoneit_referti_data___________corre_visualizzazione_necessario",
+  "code": "LEARNED_MODALIT_CONSULTAZIONE_IDONEIT_REFERTI_DATA___________CORRE_VISUALIZZAZIONE_NECESSARIO",
+  "name": "Template provvisorio learned_modalit_consultazione_idoneit_referti_data___________corre_visualizzazione_necessario",
+  "description": "Template creato dal primo flusso manuale QSign.",
+  "document_type": "manual_signature_flow",
+  "version": "0.1.0",
+  "state": "draft",
+  "priority": 5,
+  "document_rules": [],
+  "recognition_rules": [
+    {
+      "rule_id": "manual-filename-stem",
+      "rule_type": "literal",
+      "expression": "infportale_000000000052050_GHINASSI_ENNIO_MASSIMO(5)",
+      "scope": "document",
+      "required": false,
+      "weight": 0.25
+    },
+    {
+      "rule_id": "manual-recognition-phrase",
+      "rule_type": "literal",
+      "expression": "Salute e Lavoro Società Coopera va Ambulatori Via Meucci, 18 - 47122 Forlì (FC) Tel. 0543 798337 Via G. Per cari, 2/A - 47035 Salute e Lavoro Società Coopera va",
+      "scope": "document",
+      "required": false,
+      "weight": 6.0
+    },
+    {
+      "rule_id": "manual-structural-signature",
+      "rule_type": "literal",
+      "expression": "modalit consultazione idoneit referti data__________ corre visualizzazione necessario collegarsi indirizzo saluteelavoro tablet inserire campo username primo",
+      "scope": "document",
+      "required": true,
+      "weight": 10.0
+    },
+    {
+      "rule_id": "manual-keyword-1",
+      "rule_type": "literal",
+      "expression": "modalit",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-2",
+      "rule_type": "literal",
+      "expression": "consultazione",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-3",
+      "rule_type": "literal",
+      "expression": "idoneit",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-4",
+      "rule_type": "literal",
+      "expression": "referti",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-5",
+      "rule_type": "literal",
+      "expression": "data__________",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-6",
+      "rule_type": "literal",
+      "expression": "corre",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-7",
+      "rule_type": "literal",
+      "expression": "visualizzazione",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-8",
+      "rule_type": "literal",
+      "expression": "necessario",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    }
+  ],
+  "anchor_rules": [],
+  "placement_rules": [
+    {
+      "placement_id": "manual-signature",
+      "role": "signer",
+      "anchor_id": "manual",
+      "side": "manual",
+      "alignment": "manual",
+      "x_offset": 332.5,
+      "y_offset": 736.0,
+      "width": 218.0,
+      "height": 81.0,
+      "page_index": 1,
+      "required": true
+    }
+  ],
+  "settings": {
+    "recognition_threshold": 80,
+    "ambiguity_margin": 5,
+    "normalization_profile": "default"
+  }
+}
