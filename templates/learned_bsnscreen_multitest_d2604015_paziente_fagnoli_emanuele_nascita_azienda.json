@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0",
-  "template_id": "learned_informativa_prevenzione_oncologica_data___________decreto_legge_sorveglianza_sanitaria",
-  "code": "LEARNED_INFORMATIVA_PREVENZIONE_ONCOLOGICA_DATA___________DECRETO_LEGGE_SORVEGLIANZA_SANITARIA",
-  "name": "Template provvisorio learned_informativa_prevenzione_oncologica_data___________decreto_legge_sorveglianza_sanitaria",
+  "template_id": "learned_bsnscreen_multitest_d2604015_paziente_fagnoli_emanuele_nascita_azienda",
+  "code": "LEARNED_BSNSCREEN_MULTITEST_D2604015_PAZIENTE_FAGNOLI_EMANUELE_NASCITA_AZIENDA",
+  "name": "Template provvisorio learned_bsnscreen_multitest_d2604015_paziente_fagnoli_emanuele_nascita_azienda",
   "description": "Template creato dal primo flusso manuale QSign.",
   "document_type": "manual_signature_flow",
   "version": "0.1.0",
@@ -13,7 +13,7 @@
     {
       "rule_id": "manual-filename-stem",
       "rule_type": "literal",
-      "expression": "851013_beuk8pvxri",
+      "expression": "851058_yg9c1pljxw",
       "scope": "document",
       "required": false,
       "weight": 0.25
@@ -21,7 +21,7 @@
     {
       "rule_id": "manual-recognition-phrase",
       "rule_type": "literal",
-      "expression": "Salute e Lavoro Società Coopera va Ambulatori Via Meucci, 18 - 47122 Forlì (FC) Tel. 0543 798337 Via G. Per cari, 2/A - 47035",
+      "expression": "BSNScreen Cup Multitest DOA8 LOT: D2604015 SCAD: 31/03/2028 07/07/2026 - 17:38 PAZIENTE: Fagnoli Emanuele DATA DI NASCITA: 25/12/1971 AZIENDA: AUTOTRASPORTI FAG",
       "scope": "document",
       "required": false,
       "weight": 6.0
@@ -29,7 +29,7 @@
     {
       "rule_id": "manual-structural-signature",
       "rule_type": "literal",
-      "expression": "informativa prevenzione oncologica data__________ decreto legge sorveglianza sanitaria comma riveste ruolo fondamentale tutela nostra recen aggiornamen",
+      "expression": "bsnscreen multitest d2604015 paziente fagnoli emanuele nascita azienda autotrasporti nicola callea punto prelievo immagine normale creatinina",
       "scope": "document",
       "required": true,
       "weight": 10.0
@@ -37,7 +37,7 @@
     {
       "rule_id": "manual-visual-signature",
       "rule_type": "visual_hash",
-      "expression": "000000003f8400403f80fe003801ff4c3ff40040013ffb801ffa00001ffffff81ffffff81ffffc001ffffff81ffffff81ffffff81fe100001ffdfff81ffffff81ffbfff81ffffff80f0000001ffffff81fffc0001ffe00001ff000001ffffff81ffffff81ffffff81fffffc01ffe00000c0003e0001c0b700000000000000000",
+      "expression": "0000000000000000000000007fe0003c12200024774a0000000000007ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffa0b3c7ff800007ff8000040f800007ff800007ff800007ff80000000000000000000000000000000000000000000000000000000000003f87e1fc00000000",
       "scope": "document",
       "required": true,
       "weight": 30.0
@@ -45,7 +45,7 @@
     {
       "rule_id": "manual-keyword-1",
       "rule_type": "literal",
-      "expression": "informativa",
+      "expression": "bsnscreen",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -53,7 +53,7 @@
     {
       "rule_id": "manual-keyword-2",
       "rule_type": "literal",
-      "expression": "prevenzione",
+      "expression": "multitest",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -61,7 +61,7 @@
     {
       "rule_id": "manual-keyword-3",
       "rule_type": "literal",
-      "expression": "oncologica",
+      "expression": "d2604015",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -69,7 +69,7 @@
     {
       "rule_id": "manual-keyword-4",
       "rule_type": "literal",
-      "expression": "data__________",
+      "expression": "paziente",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -77,7 +77,7 @@
     {
       "rule_id": "manual-keyword-5",
       "rule_type": "literal",
-      "expression": "decreto",
+      "expression": "fagnoli",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -85,7 +85,7 @@
     {
       "rule_id": "manual-keyword-6",
       "rule_type": "literal",
-      "expression": "legge",
+      "expression": "emanuele",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -93,7 +93,7 @@
     {
       "rule_id": "manual-keyword-7",
       "rule_type": "literal",
-      "expression": "sorveglianza",
+      "expression": "nascita",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -101,7 +101,7 @@
     {
       "rule_id": "manual-keyword-8",
       "rule_type": "literal",
-      "expression": "sanitaria",
+      "expression": "azienda",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -115,10 +115,10 @@
       "anchor_id": "manual",
       "side": "manual",
       "alignment": "manual",
-      "x_offset": 139.5,
-      "y_offset": 756.0,
-      "width": 204.0,
-      "height": 65.0,
+      "x_offset": 417.0,
+      "y_offset": 679.0,
+      "width": 199.0,
+      "height": 112.0,
       "page_index": 0,
       "required": true
     }

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from app.services.general_preferences_service import GeneralPreferencesService
 from models.document import Document, Rectangle
 from models.template import AnchorRule, PlacementRule, RecognitionRule, Template
 from services.logging.logging_service import LoggingService
@@ -55,6 +56,7 @@ _COMMON_MANUAL_TEMPLATE_TOKENS: frozenset[str] = frozenset(
         "massimo",
     }
 )
+_VISUAL_SIGNATURE_METADATA_KEY = "qsign_visual_signature"
 
 
 class PDFViewerView(Protocol):
@@ -77,7 +79,11 @@ class PDFViewerView(Protocol):
 
     def set_manual_signature_mode(self, enabled: bool) -> None: ...
 
-    def ask_save_template(self, on_confirm: "SaveTemplateCallback") -> None: ...
+    def ask_save_template(
+        self,
+        on_confirm: "SaveTemplateCallback",
+        on_cancel: "SaveTemplateCallback",
+    ) -> None: ...
 
     def open_signature_dialog(
         self,
@@ -119,6 +125,14 @@ class SaveTemplateCallback(Protocol):
     def __call__(self) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class SignatureRectangleSnapshot:
+    rectangle: Rectangle | None
+    page_index: int | None
+    anchor_match: AnchorMatch | None
+    workflow_status: str
+
+
 class SignatureConfirmCallback(Protocol):
     def __call__(self, signature: CapturedSignature) -> None: ...
 
@@ -149,6 +163,7 @@ class PDFViewerController:
         pdf_provider: PdfProvider | None = None,
         anchor_detector: AnchorDetector | None = None,
         template_repository: TemplateRepository | None = None,
+        general_preferences_service: GeneralPreferencesService | None = None,
         template_root: str | Path = "templates",
     ) -> None:
         self._pdf_service = pdf_service
@@ -157,6 +172,7 @@ class PDFViewerController:
         self._pdf_provider = pdf_provider
         self._anchor_detector = anchor_detector
         self._template_repository = template_repository
+        self._general_preferences_service = general_preferences_service
         self._template_root = Path(template_root)
         self._canonical_document: Document | None = None
         self._anchor_matches: tuple[AnchorMatch, ...] = ()
@@ -165,6 +181,7 @@ class PDFViewerController:
         self._signature_page_index: int | None = None
         self._captured_signature: CapturedSignature | None = None
         self._recognized_template: Template | None = None
+        self._pending_manual_rectangle_restore: SignatureRectangleSnapshot | None = None
         self._workflow_status = "Apri un PDF"
         self.state = PDFViewerState()
 
@@ -185,6 +202,7 @@ class PDFViewerController:
             self._signature_page_index = None
             self._captured_signature = None
             self._recognized_template = None
+            self._pending_manual_rectangle_restore = None
             self._workflow_status = "Documento non aperto"
             self._view.clear_document()
             self._view.show_error(str(error))
@@ -202,6 +220,7 @@ class PDFViewerController:
             self._signature_page_index = None
             self._captured_signature = None
             self._recognized_template = None
+            self._pending_manual_rectangle_restore = None
             self._workflow_status = "Apri un PDF"
             self._view.set_manual_signature_mode(False)
             self._view.clear_document()
@@ -218,6 +237,7 @@ class PDFViewerController:
         self._signature_page_index = None
         self._captured_signature = None
         self._recognized_template = None
+        self._pending_manual_rectangle_restore = None
         self._workflow_status = "Apri un PDF"
 
     def previous_page(self) -> None:
@@ -293,6 +313,7 @@ class PDFViewerController:
         self._signature_page_index = None
         self._captured_signature = None
         self._recognized_template = None
+        self._pending_manual_rectangle_restore = None
         self._workflow_status = "Analisi documento..."
         self._view.set_manual_signature_mode(False)
         if self._pdf_provider is None or self._anchor_detector is None:
@@ -399,6 +420,12 @@ class PDFViewerController:
         page_size = document.page_sizes[self.state.page_index]
         scale_x = page_size.width / image_width
         scale_y = page_size.height / image_height
+        self._pending_manual_rectangle_restore = SignatureRectangleSnapshot(
+            rectangle=self._signature_rectangle,
+            page_index=self._signature_page_index,
+            anchor_match=self._signature_anchor_match,
+            workflow_status=self._workflow_status,
+        )
         self._signature_rectangle = Rectangle(
             left * scale_x,
             top * scale_y,
@@ -422,7 +449,10 @@ class PDFViewerController:
             bottom=round(self._signature_rectangle.bottom, 2),
         )
         self._render_current_page()
-        self._view.ask_save_template(self.save_manual_template)
+        self._view.ask_save_template(
+            self.save_manual_template,
+            self.cancel_manual_template_change,
+        )
 
     def open_signature_dialog(self) -> None:
         if self._signature_rectangle is None:
@@ -449,6 +479,9 @@ class PDFViewerController:
             bytes=len(signature.content),
             media_type=signature.media_type,
         )
+        if self._auto_save_signed_documents_enabled():
+            self.save_signed_pdf()
+            return
         self._render_current_page()
 
     def save_signed_pdf(self) -> None:
@@ -480,7 +513,7 @@ class PDFViewerController:
             return
 
         self._workflow_status = f"PDF firmato salvato: {destination}"
-        self._logger.info("Signed PDF preview requested", destination=str(destination))
+        self._logger.info("Signed PDF saved", destination=str(destination))
         if self._pdf_service.current_document is not None:
             self._pdf_service.close_document()
         self.state = PDFViewerState()
@@ -491,9 +524,18 @@ class PDFViewerController:
         self._signature_page_index = None
         self._captured_signature = None
         self._recognized_template = None
+        self._pending_manual_rectangle_restore = None
         self._view.set_manual_signature_mode(False)
         self._view.clear_document()
         self._view.show_status(f"PDF firmato salvato: {destination}")
+
+    def _auto_save_signed_documents_enabled(self) -> bool:
+        if self._general_preferences_service is None:
+            return False
+        return (
+            self._general_preferences_service.get_supabase_settings()
+            .auto_save_signed_documents
+        )
 
     def save_manual_template(self) -> None:
         if self._canonical_document is None or self._signature_rectangle is None:
@@ -533,7 +575,28 @@ class PDFViewerController:
             encoding="utf-8",
         )
         self._workflow_status = f"Modello salvato: {template_path.name}"
+        self._pending_manual_rectangle_restore = None
         self._logger.info("Manual template saved", path=str(template_path))
+        self._render_current_page()
+
+    def cancel_manual_template_change(self) -> None:
+        snapshot = self._pending_manual_rectangle_restore
+        self._pending_manual_rectangle_restore = None
+        if snapshot is None or snapshot.rectangle is None:
+            self._view.show_status("modello non salvato")
+            return
+
+        self._signature_rectangle = snapshot.rectangle
+        self._signature_page_index = snapshot.page_index
+        self._signature_anchor_match = snapshot.anchor_match
+        self._workflow_status = snapshot.workflow_status
+        self._view.set_manual_signature_mode(True)
+        if self._signature_page_index is not None:
+            self.state.page_index = self._signature_page_index
+        self._logger.info(
+            "Manual signature rectangle change cancelled",
+            page=self._signature_page_index,
+        )
         self._render_current_page()
 
     def _overlays_for_current_page(
@@ -744,6 +807,11 @@ class PDFViewerController:
             and template.recognition_rules[0].rule_id == "manual-recognition-phrase"
         ):
             return min(template.settings.recognition_threshold, 60.0)
+        if (
+            template.document_type == "manual_signature_flow"
+            and _has_visual_recognition_rule(template)
+        ):
+            return min(template.settings.recognition_threshold, 70.0)
         return template.settings.recognition_threshold
 
     def _template_score(self, template: Template, document: Document) -> float:
@@ -765,6 +833,21 @@ class PDFViewerController:
                     rule.expression, document.source_path.stem
                 )
                 filename_score = match_score
+            elif (
+                template.document_type == "manual_signature_flow"
+                and rule.rule_id == "manual-recognition-phrase"
+                and _looks_like_filename_fallback(rule.expression)
+            ):
+                match_score = _filename_stem_match_score(
+                    rule.expression, document.source_path.stem
+                )
+            elif (
+                template.document_type == "manual_signature_flow"
+                and rule.rule_id == "manual-visual-signature"
+            ):
+                match_score = _visual_signature_match_score(
+                    rule.expression, _visual_signature(document)
+                )
             else:
                 match_score = _literal_match_score(expression, document_text)
             if (
@@ -1024,6 +1107,18 @@ class PDFViewerController:
                     "weight": 10.0,
                 }
             )
+        visual_signature = _visual_signature(document)
+        if visual_signature:
+            rules.append(
+                {
+                    "rule_id": "manual-visual-signature",
+                    "rule_type": "visual_hash",
+                    "expression": visual_signature,
+                    "scope": "document",
+                    "required": True,
+                    "weight": 30.0,
+                }
+            )
         for index, token in enumerate(_structural_tokens(document)[:8], start=1):
             rules.append(
                 {
@@ -1060,7 +1155,13 @@ def _recognition_phrase(document: Document) -> str:
 def _manual_template_key(document: Document) -> str:
     tokens = _structural_tokens(document)[:8]
     if not tokens:
-        tokens = _distinctive_tokens(document.source_path.stem)[:8]
+        filename_type_key = _filename_document_type_key(document.source_path.stem)
+        if filename_type_key:
+            tokens = (filename_type_key,)
+        elif _visual_signature(document):
+            tokens = (f"visual_{_visual_signature(document)[:16]}",)
+        else:
+            tokens = _distinctive_tokens(document.source_path.stem)[:8]
     value = "_".join(tokens) or document.source_path.stem or "manual"
     return re.sub(r"[^a-z0-9_]+", "_", value.casefold()).strip("_") or "manual"
 
@@ -1101,6 +1202,32 @@ def _has_structural_recognition_rule(template: Template) -> bool:
     )
 
 
+def _has_visual_recognition_rule(template: Template) -> bool:
+    return any(
+        rule.rule_id == "manual-visual-signature"
+        for rule in template.recognition_rules
+    )
+
+
+def _visual_signature(document: Document) -> str:
+    return document.metadata.values.get(_VISUAL_SIGNATURE_METADATA_KEY, "").strip()
+
+
+def _visual_signature_match_score(
+    template_signature: str, document_signature: str
+) -> float:
+    template_clean = re.sub(r"[^0-9a-f]", "", template_signature.casefold())
+    document_clean = re.sub(r"[^0-9a-f]", "", document_signature.casefold())
+    if not template_clean or len(template_clean) != len(document_clean):
+        return 0.0
+    try:
+        difference = int(template_clean, 16) ^ int(document_clean, 16)
+    except ValueError:
+        return 0.0
+    total_bits = len(template_clean) * 4
+    return 1.0 - (difference.bit_count() / total_bits)
+
+
 def _literal_match_score(expression: str, document_text: str) -> float:
     if not expression:
         return 0.0
@@ -1115,16 +1242,37 @@ def _literal_match_score(expression: str, document_text: str) -> float:
 
 
 def _filename_stem_match_score(template_stem: str, document_stem: str) -> float:
-    return (
-        1.0
-        if _normalize_filename_stem(template_stem)
-        == _normalize_filename_stem(document_stem)
-        else 0.0
-    )
+    template_normalized = _normalize_filename_stem(template_stem)
+    document_normalized = _normalize_filename_stem(document_stem)
+    if template_normalized == document_normalized:
+        return 1.0
+    template_type_key = _filename_document_type_key(template_stem)
+    document_type_key = _filename_document_type_key(document_stem)
+    if template_type_key and template_type_key == document_type_key:
+        return 1.0
+    return 0.0
 
 
 def _normalize_filename_stem(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+
+
+def _looks_like_filename_fallback(value: str) -> bool:
+    normalized = _normalize_filename_stem(value)
+    return bool(
+        re.search(r"(?:^|_)stampa_[a-z0-9_]+_\d{6,}$", normalized)
+        or re.search(r"_\d{6,}$", normalized)
+    )
+
+
+def _filename_document_type_key(value: str) -> str:
+    normalized = _normalize_filename_stem(value)
+    match = re.search(r"(?:^|_)stampa_([a-z0-9_]+?)_\d{6,}$", normalized)
+    if match:
+        document_type = re.sub(r"_+", "_", match.group(1)).strip("_")
+        if document_type:
+            return f"stampa_{document_type}"
+    return ""
 
 
 def _distinctive_tokens(value: str) -> tuple[str, ...]:

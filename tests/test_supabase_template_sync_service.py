@@ -44,6 +44,27 @@ class SupabaseTemplateSyncServiceTests(unittest.TestCase):
             self.assertEqual(payload[0]["json"], {"template_id": "learned_privacy"})
             self.assertIn("updated_at", payload[0])
 
+    def test_upload_logs_template_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_root = Path(directory)
+            (template_root / "learned_privacy.json").write_text(
+                json.dumps({"template_id": "learned_privacy"}),
+                encoding="utf-8",
+            )
+            logger = FakeLogger()
+            service = SupabaseTemplateSyncService(
+                preferences_service=FakePreferencesService(),
+                template_root=template_root,
+                opener=_recording_opener([], b"[]"),
+                logger=logger,
+            )
+
+            service.upload_templates()
+
+            messages = [entry[0] for entry in logger.entries]
+            self.assertIn("Template upload started", messages)
+            self.assertIn("Template upload completed", messages)
+
     def test_download_writes_remote_learned_templates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             template_root = Path(directory)
@@ -89,18 +110,54 @@ class SupabaseTemplateSyncServiceTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 SupabaseTemplateSyncServiceError,
-                "Row Level Security",
+                "Row Level Security sulla tabella 'SaluteLavoro'",
+            ):
+                service.upload_templates()
+
+    def test_row_level_security_error_mentions_configured_table(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_root = Path(directory)
+            (template_root / "learned_privacy.json").write_text(
+                json.dumps({"template_id": "learned_privacy"}),
+                encoding="utf-8",
+            )
+            service = SupabaseTemplateSyncService(
+                preferences_service=FakePreferencesService(table_name="Meddoc"),
+                template_root=template_root,
+                opener=_failing_opener(
+                    401,
+                    (
+                        '{"code":"42501","message":"new row violates row-level '
+                        'security policy for table \\"Meddoc\\""}'
+                    ).encode("utf-8"),
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                SupabaseTemplateSyncServiceError,
+                "Row Level Security sulla tabella 'Meddoc'",
             ):
                 service.upload_templates()
 
 
 class FakePreferencesService:
+    def __init__(self, table_name: str = "SaluteLavoro") -> None:
+        self.table_name = table_name
+
     def get_supabase_settings(self) -> SupabaseSettings:
         return SupabaseSettings(
             project_url="https://demo.supabase.co",
             password="sb_publishable_test",
-            table_name="SaluteLavoro",
+            table_name=self.table_name,
         )
+
+
+class FakeLogger:
+    def __init__(self) -> None:
+        self.entries: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, message: str, **context: object) -> None:
+        self.entries.append((message, context))
 
 
 def _recording_opener(requests: list[object], response_body: bytes):

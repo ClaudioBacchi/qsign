@@ -43,15 +43,17 @@ class QSignApplication:
         anchor_detector = AnchorDetector(logger=self._logger)
         template_repository = FilesystemTemplateRepository("templates")
         certificate_service = CertificateService()
-        general_preferences_service = GeneralPreferencesService()
+        general_preferences_service = GeneralPreferencesService(logger=self._logger)
         template_sync_service = SupabaseTemplateSyncService(
             preferences_service=general_preferences_service,
             template_root="templates",
+            logger=self._logger,
         )
         digital_signature_writer = PyHankoDigitalSignatureWriter(
             certificate_service=certificate_service,
             logger=self._logger,
             metadata_provider=certificate_service.get_signature_metadata,
+            visible_text_provider=lambda: general_preferences_service.get_supabase_settings().show_signature_text,
         )
         signature_writer = PyMuPDFSignatureWriter(
             logger=self._logger,
@@ -76,6 +78,7 @@ class QSignApplication:
             pdf_provider=pdf_provider,
             anchor_detector=anchor_detector,
             template_repository=template_repository,
+            general_preferences_service=general_preferences_service,
         )
         view.bind_actions(
             on_open_document=controller.open_document,
@@ -88,12 +91,26 @@ class QSignApplication:
             on_manual_signature_rect=controller.set_manual_signature_rectangle,
             on_signature_area_click=controller.open_signature_dialog,
         )
-        view.build()
+        view.prepare_window_shell()
+        self._set_window_visible(page, False)
         self._sync_templates_on_startup(
             general_preferences_service,
             template_sync_service,
         )
+        view.build()
+        view.show_startup_user_confirmation()
+        self._set_window_visible(page, True)
         page.on_close = lambda _: controller.shutdown()
+
+    @staticmethod
+    def _set_window_visible(page: "ft.Page", visible: bool) -> None:
+        window = getattr(page, "window", None)
+        if window is None or not hasattr(window, "visible"):
+            return
+        window.visible = visible
+        update = getattr(page, "update", None)
+        if callable(update):
+            update()
 
     def _sync_templates_on_startup(
         self,

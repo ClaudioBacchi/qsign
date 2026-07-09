@@ -12,6 +12,7 @@ from typing import Callable
 import pymupdf
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.sign import fields, signers
+from pyhanko.stamp import NoOpStampStyle, TextStampStyle
 
 from app.services.certificate_service import CertificateService, SignatureMetadata
 from services.logging.logging_service import LoggingService
@@ -28,12 +29,14 @@ class PyHankoDigitalSignatureWriter(DigitalPDFSignatureWriter):
         reason: str = "SorveglianzaSanitaria",
         reason_provider: Callable[[], str] | None = None,
         metadata_provider: Callable[[], SignatureMetadata] | None = None,
+        visible_text_provider: Callable[[], bool] | None = None,
     ) -> None:
         self._certificate_service = certificate_service
         self._logger = logger
         self._reason = reason
         self._reason_provider = reason_provider
         self._metadata_provider = metadata_provider
+        self._visible_text_provider = visible_text_provider
 
     def sign_pdf(
         self,
@@ -71,9 +74,19 @@ class PyHankoDigitalSignatureWriter(DigitalPDFSignatureWriter):
             pdf_signer = signers.PdfSigner(
                 metadata,
                 signer=signer,
+                stamp_style=self._stamp_style(self._show_visible_text()),
                 new_field_spec=field_spec,
             )
-            _run_pyhanko_sign_pdf(pdf_signer, source, destination)
+            _run_pyhanko_sign_pdf(
+                pdf_signer,
+                source,
+                destination,
+                appearance_text_params={
+                    "reason": metadata_values.reason,
+                    "location": metadata_values.location or "Non disponibile",
+                    "contact": metadata_values.contact_info or "Non disponibile",
+                },
+            )
 
         self._logger.info(
             "Digital PDF signature written",
@@ -103,16 +116,44 @@ class PyHankoDigitalSignatureWriter(DigitalPDFSignatureWriter):
         reason = self._reason_provider() if self._reason_provider else self._reason
         return SignatureMetadata(reason=reason, location="", contact_info="")
 
+    def _show_visible_text(self) -> bool:
+        return bool(
+            self._visible_text_provider()
+            if self._visible_text_provider is not None
+            else False
+        )
+
+    @staticmethod
+    def _stamp_style(show_visible_text: bool) -> NoOpStampStyle | TextStampStyle:
+        if not show_visible_text:
+            return NoOpStampStyle()
+        return TextStampStyle(
+            stamp_text=(
+                "Firmato Digitalmente\n"
+                "Data: %(ts)s\n"
+                "Motivo: %(reason)s\n"
+                "Luogo: %(location)s\n"
+                "Contatto: %(contact)s"
+            ),
+            timestamp_format="%d/%m/%Y %H:%M:%S %Z",
+        )
+
 
 def _run_pyhanko_sign_pdf(
     pdf_signer: signers.PdfSigner,
     source: Path,
     destination: Path,
+    appearance_text_params: dict[str, str] | None = None,
 ) -> None:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        _sign_pdf_with_pyhanko(pdf_signer, source, destination)
+        _sign_pdf_with_pyhanko(
+            pdf_signer,
+            source,
+            destination,
+            appearance_text_params=appearance_text_params,
+        )
         return
 
     error: list[BaseException] = []
@@ -120,7 +161,12 @@ def _run_pyhanko_sign_pdf(
 
     def sign_in_thread() -> None:
         try:
-            _sign_pdf_with_pyhanko(pdf_signer, source, destination)
+            _sign_pdf_with_pyhanko(
+                pdf_signer,
+                source,
+                destination,
+                appearance_text_params=appearance_text_params,
+            )
         except BaseException as exc:
             error.append(exc)
             traceback.append(sys.exc_info()[2])
@@ -136,7 +182,12 @@ def _sign_pdf_with_pyhanko(
     pdf_signer: signers.PdfSigner,
     source: Path,
     destination: Path,
+    appearance_text_params: dict[str, str] | None = None,
 ) -> None:
     with source.open("rb") as input_file, destination.open("wb") as output_file:
         writer = IncrementalPdfFileWriter(input_file)
-        pdf_signer.sign_pdf(writer, output=output_file)
+        pdf_signer.sign_pdf(
+            writer,
+            output=output_file,
+            appearance_text_params=appearance_text_params,
+        )

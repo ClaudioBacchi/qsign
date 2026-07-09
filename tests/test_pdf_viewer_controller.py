@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from app.services.general_preferences_service import SupabaseSettings
 from app.pdf_viewer_controller import AnchorOverlay, PDFViewerController
 from models.document import Document, Metadata, Page, Rectangle, TextBlock, Word
 from models.pdf_document import PDFDocument
@@ -35,6 +36,7 @@ class FakeViewer:
         self.statuses: list[str] = []
         self.manual_mode = False
         self.save_callback = None
+        self.cancel_save_callback = None
 
     def display_document(
         self,
@@ -73,8 +75,9 @@ class FakeViewer:
     def set_manual_signature_mode(self, enabled: bool) -> None:
         self.manual_mode = enabled
 
-    def ask_save_template(self, on_confirm) -> None:
+    def ask_save_template(self, on_confirm, on_cancel) -> None:
         self.save_callback = on_confirm
+        self.cancel_save_callback = on_cancel
 
     def open_signature_dialog(self, on_confirm, on_clear, on_cancel) -> None:
         on_confirm(
@@ -542,6 +545,43 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(overlays[0].height, 40)
         self.assertTrue(self.view.manual_mode)
 
+    def test_cancelling_manual_correction_restores_recognized_template_box(self) -> None:
+        self.controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create(
+                "qsign.tests.controller.cancel_manual_correction"
+            ),
+            pdf_provider=FakePDFProviderWithoutAnchors(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create(
+                    "qsign.tests.controller.cancel_manual_correction_detector"
+                )
+            ),
+            template_repository=FakeTemplateRepository(),
+        )
+
+        self.controller.open_document("sample.pdf")
+        self.controller.set_manual_signature_rectangle(
+            left=70,
+            top=80,
+            width=90,
+            height=50,
+            image_width=200,
+            image_height=200,
+        )
+
+        self.assertIsNotNone(self.view.cancel_save_callback)
+        self.view.cancel_save_callback()
+
+        overlays = self.view.pages[-1][4]
+        self.assertEqual(len(overlays), 1)
+        self.assertEqual(overlays[0].left, 20)
+        self.assertEqual(overlays[0].top, 30)
+        self.assertEqual(overlays[0].width, 80)
+        self.assertEqual(overlays[0].height, 40)
+        self.assertTrue(self.view.manual_mode)
+
     def test_save_signed_pdf_requires_captured_signature(self) -> None:
         self.controller.open_document("sample.pdf")
         self.controller.set_manual_signature_rectangle(
@@ -584,6 +624,41 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(area.y, 30)
         self.assertEqual(area.width, 80)
         self.assertEqual(area.height, 40)
+        self.service.close_document.assert_called_once()
+        self.assertTrue(self.view.cleared)
+        self.assertIn("PDF firmato salvato", self.view.statuses[-1])
+
+    def test_confirmed_mouse_signature_auto_saves_when_preference_is_enabled(self) -> None:
+        self.service.save_signed_preview.return_value = Path(
+            "dist/signed/sample_signed.pdf"
+        )
+        self.controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.auto_save"),
+            general_preferences_service=FakeGeneralPreferencesService(
+                auto_save_signed_documents=True
+            ),
+        )
+        self.controller.open_document("sample.pdf")
+        self.controller.set_manual_signature_rectangle(
+            left=20,
+            top=30,
+            width=80,
+            height=40,
+            image_width=200,
+            image_height=200,
+        )
+
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        self.controller.apply_mouse_signature(signature)
+
+        saved_signature, area = self.service.save_signed_preview.call_args.args
+        self.assertEqual(saved_signature, signature)
+        self.assertEqual(area.page_index, 0)
         self.service.close_document.assert_called_once()
         self.assertTrue(self.view.cleared)
         self.assertIn("PDF firmato salvato", self.view.statuses[-1])
@@ -699,6 +774,112 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(len(overlays), 1)
         self.assertEqual(overlays[0].left, 70)
         self.assertEqual(overlays[0].top, 80)
+
+    def test_scanned_learned_template_matches_same_filename_document_type(self) -> None:
+        self.controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.filename_type"),
+            pdf_provider=FakePDFProviderScannedDocument(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create("qsign.tests.controller.filename_type_detector")
+            ),
+            template_repository=FakeScannedNominaTemplateRepository(),
+        )
+
+        self.controller.open_document(
+            "3G S.A.S. di Geminiano Radicchi & C._stampa_nomina_000000000075163.pdf"
+        )
+
+        overlays = self.view.pages[-1][4]
+        self.assertEqual(len(overlays), 1)
+        self.assertEqual(overlays[0].left, 265.5)
+        self.assertEqual(overlays[0].top, 740.0)
+        self.assertEqual(overlays[0].width, 263.0)
+        self.assertEqual(overlays[0].height, 78.0)
+
+    def test_scanned_manual_template_uses_generic_filename_document_type_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.scanned_save"),
+                pdf_provider=FakePDFProviderScannedDocument(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create("qsign.tests.controller.scanned_save_detector")
+                ),
+                template_root=directory,
+            )
+
+            self.controller.open_document(
+                "3 EFFE SRL UNIPERSONALE_stampa_nomina_000000000003502.pdf"
+            )
+            self.controller.set_manual_signature_rectangle(
+                left=20,
+                top=30,
+                width=80,
+                height=40,
+                image_width=200,
+                image_height=200,
+            )
+            self.view.save_callback()
+
+            saved_templates = list(Path(directory).glob("learned_*.json"))
+            self.assertEqual(
+                [path.name for path in saved_templates],
+                ["learned_stampa_nomina.json"],
+            )
+
+    def test_scanned_manual_template_without_stable_filename_saves_visual_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.visual_save"),
+                pdf_provider=FakePDFProviderVisualScannedDocument(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create("qsign.tests.controller.visual_save_detector")
+                ),
+                template_root=directory,
+            )
+
+            self.controller.open_document("851013_beuk8pvxri.pdf")
+            self.controller.set_manual_signature_rectangle(
+                left=20,
+                top=30,
+                width=80,
+                height=40,
+                image_width=200,
+                image_height=200,
+            )
+            self.view.save_callback()
+
+            saved_templates = list(Path(directory).glob("learned_*.json"))
+            self.assertEqual(
+                [path.name for path in saved_templates],
+                ["learned_visual_000000003f840040.json"],
+            )
+            content = saved_templates[0].read_text(encoding="utf-8")
+            self.assertIn('"rule_id": "manual-visual-signature"', content)
+
+    def test_scanned_learned_template_matches_same_visual_signature(self) -> None:
+        self.controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.visual_match"),
+            pdf_provider=FakePDFProviderVisualScannedDocument(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create("qsign.tests.controller.visual_match_detector")
+            ),
+            template_repository=FakeVisualScannedTemplateRepository(),
+        )
+
+        self.controller.open_document("851020_wjfecpztvu.pdf")
+
+        overlays = self.view.pages[-1][4]
+        self.assertEqual(len(overlays), 1)
+        self.assertEqual(overlays[0].left, 174.5)
+        self.assertEqual(overlays[0].top, 715.0)
 
     def test_relative_template_places_signature_from_detected_anchor(self) -> None:
         self.controller = PDFViewerController(
@@ -816,6 +997,16 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(self.view.pages[-1][4], ())
 
 
+class FakeGeneralPreferencesService:
+    def __init__(self, auto_save_signed_documents: bool = False) -> None:
+        self._auto_save_signed_documents = auto_save_signed_documents
+
+    def get_supabase_settings(self) -> SupabaseSettings:
+        return SupabaseSettings(
+            auto_save_signed_documents=self._auto_save_signed_documents
+        )
+
+
 class FakePDFProvider:
     def load_document(self, path: str | Path) -> Document:
         body_signature_word = Word(
@@ -912,6 +1103,32 @@ class FakePDFProviderWithoutAnchors:
                 ),
             ),
             metadata=Metadata(),
+        )
+
+
+class FakePDFProviderScannedDocument:
+    def load_document(self, path: str | Path) -> Document:
+        return Document(
+            source_path=Path(path),
+            page_count=1,
+            pages=(Page(index=0, width=595, height=842),),
+            metadata=Metadata(),
+        )
+
+
+class FakePDFProviderVisualScannedDocument:
+    def load_document(self, path: str | Path) -> Document:
+        return Document(
+            source_path=Path(path),
+            page_count=1,
+            pages=(Page(index=0, width=595, height=842),),
+            metadata=Metadata(
+                {
+                    "qsign_visual_signature": (
+                        "000000003f8400403f80fe003801ff4c3ff40040013ffb801ffa00001ffffff81ffffff81ffffc001ffffff81ffffff81ffffff81fe100001ffdfff81ffffff81ffbfff81ffffff80f0000001ffffff81fffc0001ffe00001ff000001ffffff81ffffff81ffffff81fffffc01ffe00000c0003e0001c0b700000000000000000"
+                    )
+                }
+            ),
         )
 
 
@@ -1531,6 +1748,115 @@ class FakeFilenameSpecificLearnedTemplateRepository:
             for template in self.list_templates()
             if template.template_id == template_id
         )
+
+
+class FakeScannedNominaTemplateRepository:
+    def list_templates(self) -> tuple[Template, ...]:
+        return (
+            Template(
+                template_id="learned_effe_unipersonale_stampa_nomina_000000000003502",
+                code="LEARNED_EFFE_UNIPERSONALE_STAMPA_NOMINA_000000000003502",
+                name="Learned scanned nomina",
+                document_type="manual_signature_flow",
+                version="0.1.0",
+                state=TemplateState.DRAFT,
+                recognition_rules=(
+                    RecognitionRule(
+                        rule_id="manual-filename-stem",
+                        rule_type="literal",
+                        expression=(
+                            "3 EFFE SRL UNIPERSONALE_stampa_nomina_000000000003502"
+                        ),
+                        required=False,
+                        weight=0.25,
+                    ),
+                    RecognitionRule(
+                        rule_id="manual-recognition-phrase",
+                        rule_type="literal",
+                        expression=(
+                            "3 EFFE SRL UNIPERSONALE_stampa_nomina_000000000003502"
+                        ),
+                        required=False,
+                        weight=6.0,
+                    ),
+                ),
+                placement_rules=(
+                    PlacementRule(
+                        placement_id="manual-signature",
+                        role="signer",
+                        anchor_id="manual",
+                        side="manual",
+                        alignment="manual",
+                        x_offset=265.5,
+                        y_offset=740.0,
+                        width=263.0,
+                        height=78.0,
+                        page_index=0,
+                    ),
+                ),
+                settings=TemplateSettings(recognition_threshold=80),
+            ),
+        )
+
+    def get_template(self, template_id: str) -> Template:
+        return self.list_templates()[0]
+
+
+class FakeVisualScannedTemplateRepository:
+    def list_templates(self) -> tuple[Template, ...]:
+        return (
+            Template(
+                template_id="learned_visual_000000003f840040",
+                code="LEARNED_VISUAL_000000003F840040",
+                name="Learned visual scanned",
+                document_type="manual_signature_flow",
+                version="0.1.0",
+                state=TemplateState.DRAFT,
+                recognition_rules=(
+                    RecognitionRule(
+                        rule_id="manual-filename-stem",
+                        rule_type="literal",
+                        expression="851013_beuk8pvxri",
+                        required=False,
+                        weight=0.25,
+                    ),
+                    RecognitionRule(
+                        rule_id="manual-recognition-phrase",
+                        rule_type="literal",
+                        expression="851013_beuk8pvxri",
+                        required=False,
+                        weight=6.0,
+                    ),
+                    RecognitionRule(
+                        rule_id="manual-visual-signature",
+                        rule_type="visual_hash",
+                        expression=(
+                            "000000003f8400403f80fe003801ff4c3ff40040013ffb801ffa00001ffffff81ffffff81ffffc001ffffff81ffffff81ffffff81fe100001ffdfff81ffffff81ffbfff81ffffff80f0000001ffffff81fffc0001ffe00001ff000001ffffff81ffffff81ffffff81fffffc01ffe00000c0003e0001c0b700000000000000000"
+                        ),
+                        required=True,
+                        weight=30.0,
+                    ),
+                ),
+                placement_rules=(
+                    PlacementRule(
+                        placement_id="manual-signature",
+                        role="signer",
+                        anchor_id="manual",
+                        side="manual",
+                        alignment="manual",
+                        x_offset=174.5,
+                        y_offset=715.0,
+                        width=250.0,
+                        height=81.0,
+                        page_index=0,
+                    ),
+                ),
+                settings=TemplateSettings(recognition_threshold=80),
+            ),
+        )
+
+    def get_template(self, template_id: str) -> Template:
+        return self.list_templates()[0]
 
 
 class FakeLegacyHeaderOnlyTemplateRepository:

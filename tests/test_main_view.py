@@ -9,8 +9,12 @@ from types import SimpleNamespace
 
 from app.services.certificate_service import CertificateInfo, SignatureMetadata
 from app.services.general_preferences_service import (
+    ErpUser,
+    ErpUserSettings,
+    ErpUsersResult,
     SupabaseConnectionResult,
     SupabaseSettings,
+    SupabaseTableResult,
 )
 from models.document import Rectangle
 from ui.main_view import MainView
@@ -162,10 +166,11 @@ class MainViewTests(unittest.TestCase):
         )
         self.assertEqual(
             [control.content.value for control in menu_bar.controls[1].controls],
-            ["Generali", "Certificato"],
+            ["Generali", "Utenti", "Certificato"],
         )
         self.assertEqual(menu_bar.controls[1].controls[0].width, 180)
         self.assertEqual(menu_bar.controls[1].controls[1].width, 180)
+        self.assertEqual(menu_bar.controls[1].controls[2].width, 180)
 
         icon_toolbar = toolbar.controls[1]
         tooltips = [
@@ -184,12 +189,9 @@ class MainViewTests(unittest.TestCase):
                 "Pagina successiva",
                 "Zoom -",
                 "Zoom +",
+                "Sblocca impostazioni amministratore",
             ],
         )
-
-    def test_windows_title_bar_colors_use_colorref_format(self) -> None:
-        self.assertEqual(MainView._windows_colorref_from_hex("1f3c98"), 0x00983C1F)
-        self.assertEqual(MainView._windows_colorref_from_hex("#ffffff"), 0x00FFFFFF)
 
     def test_signed_history_lists_signed_documents_and_opens_selected_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -204,12 +206,16 @@ class MainViewTests(unittest.TestCase):
             view.show_signed_history()
 
             self.assertEqual(page.dialog.title.value, "Storico documenti firmati")
-            table = page.dialog.content.content.controls[0]
+            table_container = page.dialog.content.content.controls[1]
+            table = table_container.content.controls[0]
             self.assertEqual(len(table.rows), 1)
             row = table.rows[0]
-            name_button = row.cells[0].content
+            name_button = row.cells[0].content.content
             self.assertEqual(name_button.content, "contratto_signed.pdf")
-            self.assertRegex(row.cells[1].content.value, r"\d{2}/\d{2}/\d{4} ")
+            self.assertRegex(
+                row.cells[1].content.content.value,
+                r"\d{2}/\d{2}/\d{4} ",
+            )
             open_button = row.cells[2].content
             self.assertEqual(open_button.tooltip, "Apri documento firmato")
 
@@ -225,8 +231,44 @@ class MainViewTests(unittest.TestCase):
             view.show_signed_history()
 
             self.assertEqual(
-                page.dialog.content.content.value,
+                page.dialog.content.content.controls[1].content.content.value,
                 "Nessun documento firmato trovato",
+            )
+
+    def test_signed_history_filters_and_sorts_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_dir = Path(directory)
+            alpha = signed_dir / "alpha_signed.pdf"
+            beta = signed_dir / "beta_signed.pdf"
+            alpha.write_bytes(b"%PDF")
+            beta.write_bytes(b"%PDF")
+            page = FakePage()
+            view = MainView(page, signed_history_directory=signed_dir)
+
+            view.show_signed_history()
+            controls = page.dialog.content.content.controls
+            search = controls[0]
+            table_container = controls[1]
+
+            search.value = "beta"
+            search.on_change(None)
+
+            table = table_container.content.controls[0]
+            self.assertEqual(len(table.rows), 1)
+            self.assertEqual(
+                table.rows[0].cells[0].content.content.content,
+                "beta_signed.pdf",
+            )
+
+            search.value = ""
+            search.on_change(None)
+            table = table_container.content.controls[0]
+            table.columns[0].label.on_click(None)
+
+            table = table_container.content.controls[0]
+            self.assertEqual(
+                [row.cells[0].content.content.content for row in table.rows],
+                ["alpha_signed.pdf", "beta_signed.pdf"],
             )
 
     def test_template_history_lists_learned_templates(self) -> None:
@@ -242,10 +284,53 @@ class MainViewTests(unittest.TestCase):
             view.show_template_history()
 
             self.assertEqual(page.dialog.title.value, "Template Documenti")
-            table = page.dialog.content.content.controls[0].content.controls[0]
+            table_container = page.dialog.content.content.controls[1]
+            table = table_container.content.controls[0]
             self.assertEqual(len(table.rows), 1)
-            self.assertEqual(table.rows[0].cells[0].content.value, "learned_privacy.json")
-            self.assertRegex(table.rows[0].cells[1].content.value, r"\d{2}/\d{2}/\d{4} ")
+            self.assertEqual(
+                table.rows[0].cells[0].content.content.value,
+                "learned_privacy.json",
+            )
+            self.assertRegex(
+                table.rows[0].cells[1].content.content.value,
+                r"\d{2}/\d{2}/\d{4} ",
+            )
+
+    def test_template_history_filters_and_sorts_learned_templates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = Path(directory)
+            alpha = template_dir / "learned_alpha.json"
+            beta = template_dir / "learned_beta.json"
+            alpha.write_text("{}", encoding="utf-8")
+            beta.write_text("{}", encoding="utf-8")
+            page = FakePage()
+            view = MainView(page, learned_template_directory=template_dir)
+
+            view.show_template_history()
+            controls = page.dialog.content.content.controls
+            search = controls[0]
+            table_container = controls[1]
+
+            search.value = "beta"
+            search.on_change(None)
+
+            table = table_container.content.controls[0]
+            self.assertEqual(len(table.rows), 1)
+            self.assertEqual(
+                table.rows[0].cells[0].content.content.value,
+                "learned_beta.json",
+            )
+
+            search.value = ""
+            search.on_change(None)
+            table = table_container.content.controls[0]
+            table.columns[0].label.on_click(None)
+
+            table = table_container.content.controls[0]
+            self.assertEqual(
+                [row.cells[0].content.content.value for row in table.rows],
+                ["learned_alpha.json", "learned_beta.json"],
+            )
 
     def test_template_download_refreshes_template_grid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -260,22 +345,22 @@ class MainViewTests(unittest.TestCase):
 
             view.show_template_history()
             self.assertEqual(
-                page.dialog.content.content.controls[0].content.value,
+                page.dialog.content.content.controls[1].content.content.value,
                 "Nessun template documento trovato",
             )
 
-            button_row = page.dialog.content.content.controls[1]
+            button_row = page.dialog.content.content.controls[2]
             button_row.controls[1].on_click(None)
 
             self.assertEqual(page.dialog.title.value, "Template Documenti")
-            table = page.dialog.content.content.controls[0].content.controls[0]
+            table = page.dialog.content.content.controls[1].content.controls[0]
             self.assertEqual(len(table.rows), 1)
             self.assertEqual(
-                table.rows[0].cells[0].content.value,
+                table.rows[0].cells[0].content.content.value,
                 "learned_synced.json",
             )
             self.assertEqual(
-                page.dialog.content.content.controls[2].value,
+                page.dialog.content.content.controls[3].value,
                 "Scaricati 1, invariati 0",
             )
 
@@ -588,6 +673,7 @@ class MainViewTests(unittest.TestCase):
     def test_certificate_child_dialog_replaces_preferences_dialog(self) -> None:
         page = FakePage()
         view = MainView(page, certificate_service=FakeCertificateService())
+        view._admin_mode = True
 
         view.show_certificate_preferences()
         page.dialog.content.content.controls[6].controls[0].on_click(None)
@@ -599,6 +685,7 @@ class MainViewTests(unittest.TestCase):
         page = FakePage()
         service = FakeCertificateService()
         view = MainView(page, certificate_service=service)
+        view._admin_mode = True
 
         view.show_certificate_preferences()
         page.dialog.content.content.controls[6].controls[3].on_click(None)
@@ -631,10 +718,23 @@ class MainViewTests(unittest.TestCase):
             "Certificato: Claudio Bacchi attivo",
         )
 
+    def test_status_bar_shows_selected_erp_user_when_configured(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            selected_user_id="42",
+            selected_user_name="Mario Rossi",
+        )
+
+        view = MainView(page, general_preferences_service=service)
+
+        self.assertEqual(view._active_user.value, "Utente: Mario Rossi")
+
     def test_general_preferences_save_and_test_supabase_settings(self) -> None:
         page = FakePage()
         service = FakeGeneralPreferencesService()
         view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
 
         view.show_general_preferences()
         controls = page.dialog.content.content.controls
@@ -642,13 +742,15 @@ class MainViewTests(unittest.TestCase):
         controls[2].value = "secret"
         controls[3].value = "SaluteLavoro"
         controls[4].value = True
-        controls[5].controls[0].on_click(None)
+        controls[5].value = True
+        controls[6].value = True
+        controls[7].controls[0].on_click(None)
 
         self.assertEqual(
-            controls[6].value,
+            controls[8].value,
             "Connessione Supabase riuscita",
         )
-        controls[5].controls[1].on_click(None)
+        controls[7].controls[3].on_click(None)
 
         self.assertEqual(
             service.settings,
@@ -657,9 +759,234 @@ class MainViewTests(unittest.TestCase):
                 password="secret",
                 table_name="SaluteLavoro",
                 auto_sync_templates_on_startup=True,
+                auto_save_signed_documents=True,
+                show_signature_text=True,
             ),
         )
-        self.assertEqual(controls[6].value, "Impostazioni salvate")
+        self.assertEqual(controls[8].value, "Impostazioni salvate")
+
+    def test_general_preferences_checks_and_creates_supabase_table(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+
+        view.show_general_preferences()
+        controls = page.dialog.content.content.controls
+        controls[1].value = "https://demo.supabase.co"
+        controls[2].value = "secret"
+        controls[3].value = "Meddoc"
+        controls[7].controls[1].on_click(None)
+
+        self.assertEqual(
+            controls[8].value,
+            (
+                "Tabella template Supabase 'Meddoc' non trovata. "
+                "Premi 'Crea tabella' per duplicarla da SaluteLavoro."
+            ),
+        )
+
+        controls[7].controls[2].on_click(None)
+
+        self.assertEqual(service.created_table_settings.table_name, "Meddoc")
+        self.assertEqual(
+            controls[8].value,
+            "Tabella template Supabase 'Meddoc' pronta",
+        )
+
+    def test_general_preferences_hides_supabase_settings_for_operator(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.settings = SupabaseSettings(
+            project_url="https://demo.supabase.co",
+            password="secret",
+            table_name="Meddoc",
+            auto_sync_templates_on_startup=False,
+            auto_save_signed_documents=False,
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        view.show_general_preferences()
+        controls = page.dialog.content.content.controls
+
+        labels = [getattr(control, "label", "") for control in controls]
+        self.assertNotIn("URL progetto Supabase", labels)
+        self.assertNotIn("Password/API key Supabase", labels)
+        self.assertNotIn("Tabella template Supabase", labels)
+        self.assertEqual([_button_label(button) for button in controls[3].controls], ["Salva"])
+
+        controls[1].value = True
+        controls[2].value = True
+        controls[3].controls[0].on_click(None)
+
+        self.assertEqual(
+            service.settings,
+            SupabaseSettings(
+                project_url="https://demo.supabase.co",
+                password="secret",
+                table_name="Meddoc",
+                auto_sync_templates_on_startup=True,
+                auto_save_signed_documents=True,
+            ),
+        )
+
+    def test_user_preferences_load_select_and_save_erp_user(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+
+        view.show_user_preferences()
+        layout = page.dialog.content.content.controls
+        connection_controls = layout[0].content.controls
+        users_controls = layout[2].content.controls
+        connection_controls[1].value = "https://erp.example.test/users"
+        connection_controls[2].value = "api-user"
+        connection_controls[3].value = "api-secret"
+        connection_controls[4].controls[1].on_click(None)
+
+        users_list = users_controls[4]
+        self.assertEqual(connection_controls[5].value, "Caricati 1 utenti")
+        users_list.controls[0].controls[2].on_click(None)
+        self.assertEqual(users_controls[1].content.value, "Mario Rossi (42)")
+
+        self.assertEqual(
+            service.erp_settings,
+            ErpUserSettings(
+                users_url="https://erp.example.test/users",
+                basic_username="api-user",
+                basic_password="api-secret",
+                selected_user_id="42",
+                selected_user_name="Mario Rossi",
+            ),
+        )
+        self.assertEqual(view._active_user.value, "Utente: Mario Rossi")
+        self.assertEqual(connection_controls[5].value, "Utente salvato: Mario Rossi")
+        self.assertEqual(
+            service.session_user_logs,
+            [
+                (
+                    ErpUserSettings(
+                        users_url="https://erp.example.test/users",
+                        basic_username="api-user",
+                        basic_password="api-secret",
+                        selected_user_id="42",
+                        selected_user_name="Mario Rossi",
+                    ),
+                    "user_preferences_selection",
+                )
+            ],
+        )
+
+        reloaded_view = MainView(page, general_preferences_service=service)
+
+        self.assertEqual(reloaded_view._active_user.value, "Utente: Mario Rossi")
+
+    def test_user_preferences_tests_erp_user_connection_without_loading_grid(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+
+        view.show_user_preferences()
+        layout = page.dialog.content.content.controls
+        connection_controls = layout[0].content.controls
+        users_controls = layout[2].content.controls
+        connection_controls[1].value = "https://erp.example.test/users"
+        connection_controls[2].value = "api-user"
+        connection_controls[3].value = "api-secret"
+        connection_controls[4].controls[0].on_click(None)
+
+        self.assertEqual(
+            connection_controls[5].value,
+            "Connessione utenti riuscita: 1 utenti disponibili",
+        )
+        self.assertEqual(users_controls[4].controls, [])
+
+    def test_user_preferences_hides_api_settings_for_operator(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            users_url="https://erp.example.test/users",
+            basic_username="api-user",
+            basic_password="api-secret",
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        view.show_user_preferences()
+        layout = page.dialog.content.content.controls
+        connection_controls = layout[0].content.controls
+        users_controls = layout[2].content.controls
+
+        labels = [getattr(control, "label", "") for control in connection_controls]
+        self.assertNotIn("URL lista utenti ERP", labels)
+        self.assertNotIn("Utente Basic Auth", labels)
+        self.assertNotIn("Password Basic Auth", labels)
+        self.assertEqual(
+            [_button_label(button) for button in connection_controls[2].controls],
+            ["Carica utenti"],
+        )
+
+        connection_controls[2].controls[0].on_click(None)
+
+        self.assertEqual(connection_controls[3].value, "Caricati 1 utenti")
+        self.assertEqual(len(users_controls[4].controls), 1)
+
+    def test_startup_user_confirmation_is_skipped_without_selected_user(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        view = MainView(page, general_preferences_service=service)
+
+        shown = view.show_startup_user_confirmation()
+
+        self.assertFalse(shown)
+        self.assertFalse(hasattr(page, "dialog"))
+
+    def test_startup_user_confirmation_can_be_confirmed(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            selected_user_id="3",
+            selected_user_name="Ghinassi",
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        shown = view.show_startup_user_confirmation()
+
+        self.assertTrue(shown)
+        self.assertEqual(page.dialog.title.value, "Utente operativo")
+        self.assertEqual(page.dialog.content.controls[1].value, "Ghinassi (3)")
+
+        page.dialog.actions[1].on_click(None)
+
+        self.assertEqual(page.pop_count, 1)
+        self.assertEqual(
+            service.session_user_logs,
+            [
+                (
+                    ErpUserSettings(
+                        selected_user_id="3",
+                        selected_user_name="Ghinassi",
+                    ),
+                    "startup_confirmation",
+                )
+            ],
+        )
+
+    def test_startup_user_confirmation_can_open_user_preferences(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            selected_user_id="3",
+            selected_user_name="Ghinassi",
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        view.show_startup_user_confirmation()
+        page.dialog.actions[0].on_click(None)
+
+        self.assertEqual(page.pop_count, 1)
+        self.assertEqual(page.dialog.title.value, "Utenti")
 
     def test_certificate_preferences_do_not_show_global_signature_reason_editor(
         self,
@@ -676,12 +1003,42 @@ class MainViewTests(unittest.TestCase):
         ]
         self.assertNotIn("Metadati firma", labels)
 
+    def test_certificate_preferences_only_allows_selection_for_operator(self) -> None:
+        page = FakePage()
+        service = FakeCertificateService()
+        view = MainView(page, certificate_service=service)
+
+        view.show_certificate_preferences()
+
+        action_row = page.dialog.content.content.controls[6]
+        self.assertEqual(
+            [_button_label(button) for button in action_row.controls],
+            ["Seleziona certificato"],
+        )
+
+    def test_select_certificate_list_aligns_items_to_left(self) -> None:
+        page = FakePage()
+        service = FakeCertificateService()
+        view = MainView(page, certificate_service=service)
+
+        view.show_certificate_preferences()
+        page.dialog.content.content.controls[6].controls[0].on_click(None)
+
+        certificate_button = page.dialog.content.content.controls[0]
+        certificate_content = certificate_button.content
+        certificate_column = certificate_content.content
+
+        self.assertEqual(certificate_content.width, 460)
+        self.assertEqual(certificate_content.alignment.x, -1)
+        self.assertEqual(certificate_column.horizontal_alignment, view._ft.CrossAxisAlignment.START)
+
     def test_generate_certificate_dialog_saves_signature_reason_and_updates_status(
         self,
     ) -> None:
         page = FakePage()
         service = FakeCertificateService()
         view = MainView(page, certificate_service=service)
+        view._admin_mode = True
 
         view.show_certificate_preferences()
         page.dialog.content.content.controls[6].controls[0].on_click(None)
@@ -708,6 +1065,57 @@ class MainViewTests(unittest.TestCase):
             "Certificato: Claudio Bacchi attivo",
         )
 
+    def test_admin_unlock_first_setup_saves_password_and_enables_admin_mode(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        view = MainView(page, general_preferences_service=service)
+        view.build()
+
+        view.show_admin_unlock_dialog()
+        controls = page.dialog.content.content.controls
+        controls[1].value = "admin-secret"
+        controls[2].value = "admin-secret"
+        page.dialog.actions[1].on_click(None)
+
+        self.assertTrue(view._admin_mode)
+        self.assertEqual(service.admin_password, "admin-secret")
+        self.assertEqual(view._security_button.icon, view._ft.Icons.LOCK_OPEN)
+
+    def test_admin_unlock_rejects_invalid_existing_password(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.admin_password = "admin-secret"
+        view = MainView(page, general_preferences_service=service)
+
+        view.show_admin_unlock_dialog()
+        controls = page.dialog.content.content.controls
+        controls[1].value = "wrong"
+        page.dialog.actions[1].on_click(None)
+
+        self.assertFalse(view._admin_mode)
+        self.assertEqual(controls[3].value, "Password amministratore non valida")
+
+    def test_admin_unlock_dialog_logs_out_active_administrator(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.admin_password = "admin-secret"
+        view = MainView(page, general_preferences_service=service)
+        view.build()
+        view._set_admin_mode(True)
+
+        view.show_admin_unlock_dialog()
+
+        self.assertEqual(page.dialog.title.value, "Amministratore attivo")
+        controls = page.dialog.content.content.controls
+        self.assertFalse(controls[1].visible)
+        self.assertEqual(_button_label(page.dialog.actions[1]), "Logout")
+
+        page.dialog.actions[1].on_click(None)
+
+        self.assertFalse(view._admin_mode)
+        self.assertEqual(view._security_button.icon, view._ft.Icons.LOCK)
+        self.assertEqual(view._document_status.value, "Stato: modalitÃ  operatore attiva")
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -715,6 +1123,11 @@ if __name__ == "__main__":
 
 def _event(x: float, y: float) -> SimpleNamespace:
     return SimpleNamespace(local_position=SimpleNamespace(x=x, y=y))
+
+
+def _button_label(button: object) -> str:
+    content = getattr(button, "content", "")
+    return str(getattr(content, "value", content))
 
 
 class FakeCertificateService:
@@ -781,6 +1194,10 @@ class FakeCertificateService:
 class FakeGeneralPreferencesService:
     def __init__(self) -> None:
         self.settings = SupabaseSettings()
+        self.erp_settings = ErpUserSettings()
+        self.created_table_settings = SupabaseSettings()
+        self.admin_password = ""
+        self.session_user_logs: list[tuple[ErpUserSettings, str]] = []
 
     def get_supabase_settings(self) -> SupabaseSettings:
         return self.settings
@@ -792,6 +1209,67 @@ class FakeGeneralPreferencesService:
         self, settings: SupabaseSettings | None = None
     ) -> SupabaseConnectionResult:
         return SupabaseConnectionResult(True, "Connessione Supabase riuscita")
+
+    def test_supabase_template_table(
+        self, settings: SupabaseSettings | None = None
+    ) -> SupabaseTableResult:
+        table_name = (settings or self.settings).table_name
+        if table_name == "Meddoc":
+            return SupabaseTableResult(
+                True,
+                False,
+                "Tabella template Supabase 'Meddoc' non trovata",
+            )
+        return SupabaseTableResult(
+            True,
+            True,
+            f"Tabella template Supabase '{table_name}' disponibile",
+        )
+
+    def ensure_supabase_template_table(
+        self,
+        settings: SupabaseSettings | None = None,
+    ) -> SupabaseTableResult:
+        self.created_table_settings = settings or self.settings
+        return SupabaseTableResult(
+            True,
+            True,
+            (
+                "Tabella template Supabase "
+                f"'{self.created_table_settings.table_name}' pronta"
+            ),
+        )
+
+    def has_admin_password(self) -> bool:
+        return bool(self.admin_password)
+
+    def set_admin_password(self, password: str) -> None:
+        self.admin_password = password
+
+    def verify_admin_password(self, password: str) -> bool:
+        return bool(self.admin_password) and password == self.admin_password
+
+    def log_erp_user_session_selection(
+        self,
+        settings: ErpUserSettings | None = None,
+        source: str = "manual",
+    ) -> None:
+        self.session_user_logs.append((settings or self.erp_settings, source))
+
+    def get_erp_user_settings(self) -> ErpUserSettings:
+        return self.erp_settings
+
+    def save_erp_user_settings(self, settings: ErpUserSettings) -> None:
+        self.erp_settings = settings
+
+    def fetch_erp_users(
+        self, settings: ErpUserSettings | None = None
+    ) -> ErpUsersResult:
+        return ErpUsersResult(
+            True,
+            "Caricati 1 utenti",
+            (ErpUser("42", "Mario Rossi"),),
+        )
 
 
 class FakeTemplateSyncResult:

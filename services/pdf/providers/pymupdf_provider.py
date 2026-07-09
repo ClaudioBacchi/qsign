@@ -17,6 +17,10 @@ from services.logging.logging_service import LoggingService
 from services.pdf.pdf_provider import PDFProviderError, PdfProvider
 
 
+_VISUAL_SIGNATURE_METADATA_KEY = "qsign_visual_signature"
+_VISUAL_SIGNATURE_SIZE = 32
+
+
 class PyMuPDFProvider(PdfProvider):
     """Convert PDF text and layout into QSign canonical models."""
 
@@ -38,13 +42,15 @@ class PyMuPDFProvider(PdfProvider):
                 raise PDFProviderError("Password-protected PDFs are not supported")
 
             pages = tuple(self._load_page(pdf, page_index) for page_index in range(pdf.page_count))
-            metadata = Metadata(
-                {
-                    str(key): str(value)
-                    for key, value in pdf.metadata.items()
-                    if value not in (None, "")
-                }
-            )
+            metadata_values = {
+                str(key): str(value)
+                for key, value in pdf.metadata.items()
+                if value not in (None, "")
+            }
+            visual_signature = self._visual_signature(pdf)
+            if visual_signature:
+                metadata_values[_VISUAL_SIGNATURE_METADATA_KEY] = visual_signature
+            metadata = Metadata(metadata_values)
             result = Document(
                 source_path=document_path,
                 page_count=pdf.page_count,
@@ -66,6 +72,32 @@ class PyMuPDFProvider(PdfProvider):
         finally:
             if pdf is not None:
                 pdf.close()
+
+    def _visual_signature(self, document: pymupdf.Document) -> str:
+        if document.page_count <= 0:
+            return ""
+        page: pymupdf.Page | None = None
+        try:
+            page = document.load_page(0)
+            scale_x = _VISUAL_SIGNATURE_SIZE / page.rect.width
+            scale_y = _VISUAL_SIGNATURE_SIZE / page.rect.height
+            pixmap = page.get_pixmap(
+                matrix=pymupdf.Matrix(scale_x, scale_y),
+                colorspace=pymupdf.csGRAY,
+                alpha=False,
+            )
+            samples = bytes(pixmap.samples)
+            if not samples:
+                return ""
+            average = sum(samples) / len(samples)
+            bits = "".join("1" if sample < average else "0" for sample in samples)
+            return hex(int(bits, 2))[2:].zfill((len(bits) + 3) // 4)
+        except Exception as error:
+            self._logger.debug("PDF visual signature unavailable", error=str(error))
+            return ""
+        finally:
+            if page is not None:
+                del page
 
     def _load_page(self, document: pymupdf.Document, page_index: int) -> Page:
         page = document.load_page(page_index)

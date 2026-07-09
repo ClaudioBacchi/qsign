@@ -13,7 +13,7 @@
     {
       "rule_id": "manual-filename-stem",
       "rule_type": "literal",
-      "expression": "infportale_000000000052050_GHINASSI_ENNIO_MASSIMO(5)",
+      "expression": "851019_ef7n3py75n",
       "scope": "document",
       "required": false,
       "weight": 0.25
@@ -33,6 +33,14 @@
       "scope": "document",
       "required": true,
       "weight": 10.0
+    },
+    {
+      "rule_id": "manual-visual-signature",
+      "rule_type": "visual_hash",
+      "expression": "0000000000000000190196000000ec00000000001ffffffc1ffff8001ffff8001ffff8001ffff8001ffff80001fff80001fbf8001ff9fbf01ffffbf81ffff8000ffff8000420f0000010000007f8000007f000000e0000000000050000000f000000000000000000000000000000000000000000000000000000000000000000",
+      "scope": "document",
+      "required": true,
+      "weight": 30.0
     },
     {
       "rule_id": "manual-keyword-1",
@@ -107,10 +115,10 @@
       "anchor_id": "manual",
       "side": "manual",
       "alignment": "manual",
-      "x_offset": 332.5,
-      "y_offset": 736.0,
-      "width": 218.0,
-      "height": 81.0,
+      "x_offset": 328.5,
+      "y_offset": 745.0,
+      "width": 255.0,
+      "height": 89.0,
       "page_index": 1,
       "required": true
     }

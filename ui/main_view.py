@@ -18,6 +18,8 @@ from app.services.certificate_service import (
     CertificateServiceError,
 )
 from app.services.general_preferences_service import (
+    ErpUser,
+    ErpUserSettings,
     GeneralPreferencesService,
     SupabaseSettings,
 )
@@ -45,6 +47,8 @@ class AnchorOverlayViewModel(Protocol):
 
 class MainView:
     """Build controls and expose presentation-only updates."""
+
+    APP_TITLE = "QSign by Queen Srl - queensrl.net"
 
     def __init__(
         self,
@@ -83,6 +87,8 @@ class MainView:
         self._manual_drag_start: tuple[float, float] | None = None
         self._manual_draft_rect: tuple[float, float, float, float] | None = None
         self._active_dialog: object | None = None
+        self._admin_mode = False
+        self._security_button: object | None = None
         self._window_icon_configured = False
         self._signature_strokes: list[list[tuple[float, float]]] = []
         self._current_signature_stroke: list[tuple[float, float]] | None = None
@@ -109,6 +115,7 @@ class MainView:
         self._document_name = ft.Text("Nessun documento")
         self._page_count = ft.Text("Pagina — / —")
         self._zoom = ft.Text("Zoom: 100%")
+        self._active_user = ft.Text(self._active_user_status_text())
         self._document_status = ft.Text(self._certificate_status_text())
         self._viewer_placeholder = ft.GestureDetector(
             content=ft.Container(
@@ -200,11 +207,10 @@ class MainView:
 
     def build(self) -> None:
         ft = self._ft
-        self._page.title = "QSign by Queen Srl - queensrl.net"
+        self.prepare_window_shell()
         self._page.padding = 0
         self._page.services.append(self._file_picker)
         self._page.services.append(self._pfx_file_picker)
-        self._configure_window_icon()
         toolbar = ft.Column(
             controls=[
                 self._build_menu_bar(),
@@ -224,6 +230,7 @@ class MainView:
                     self._document_name,
                     self._page_count,
                     self._zoom,
+                    self._active_user,
                     self._document_status,
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -241,6 +248,10 @@ class MainView:
                 spacing=0,
             )
         )
+
+    def prepare_window_shell(self) -> None:
+        self._page.title = self.APP_TITLE
+        self._configure_window_icon()
 
     def _build_menu_bar(self) -> object:
         ft = self._ft
@@ -299,6 +310,11 @@ class MainView:
                             on_click=lambda _: self.show_general_preferences(),
                         ),
                         ft.MenuItemButton(
+                            content=ft.Text("Utenti"),
+                            width=menu_item_width,
+                            on_click=lambda _: self.show_user_preferences(),
+                        ),
+                        ft.MenuItemButton(
                             content=ft.Text("Certificato"),
                             width=menu_item_width,
                             on_click=lambda _: self.show_certificate_preferences(),
@@ -315,6 +331,15 @@ class MainView:
 
     def _build_icon_toolbar(self) -> object:
         ft = self._ft
+        self._security_button = ft.IconButton(
+            icon=ft.Icons.LOCK_OPEN if self._admin_mode else ft.Icons.LOCK,
+            tooltip=(
+                "Modalità amministratore attiva"
+                if self._admin_mode
+                else "Sblocca impostazioni amministratore"
+            ),
+            on_click=lambda _: self.show_admin_unlock_dialog(),
+        )
         return ft.Row(
             controls=[
                 ft.IconButton(
@@ -359,6 +384,8 @@ class MainView:
                     tooltip="Zoom +",
                     on_click=lambda _: self._invoke(self._on_zoom_in),
                 ),
+                ft.Container(expand=True),
+                self._security_button,
             ],
             spacing=2,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -424,6 +451,173 @@ class MainView:
         self._document_status.value = self._certificate_status_text()
         self._page.update()
 
+    def show_active_user_status(self) -> None:
+        self._active_user.value = self._active_user_status_text()
+        self._page.update()
+
+    def show_admin_unlock_dialog(self) -> None:
+        ft = self._ft
+        if self._general_preferences_service is None:
+            self.show_error("Preferenze generali non disponibili")
+            return
+        first_setup = not self._general_preferences_service.has_admin_password()
+        admin_active = self._admin_mode
+        password = ft.TextField(
+            label=(
+                "Nuova password amministratore"
+                if first_setup
+                else "Password amministratore"
+            ),
+            password=True,
+            can_reveal_password=True,
+            width=360,
+            visible=not admin_active,
+        )
+        confirm_password = ft.TextField(
+            label="Conferma password amministratore",
+            password=True,
+            can_reveal_password=True,
+            width=360,
+            visible=first_setup and not admin_active,
+        )
+        result_text = ft.Text("")
+
+        def logout(_: object) -> None:
+            self._set_admin_mode(False)
+            self._close_dialog()
+            self.show_status("modalitÃ  operatore attiva")
+
+        def unlock(_: object) -> None:
+            if first_setup:
+                if not password.value:
+                    result_text.value = "Password amministratore obbligatoria"
+                    self._update_control(result_text)
+                    return
+                if password.value != confirm_password.value:
+                    result_text.value = "Le password non coincidono"
+                    self._update_control(result_text)
+                    return
+                self._general_preferences_service.set_admin_password(password.value)
+                self._set_admin_mode(True)
+                self._close_dialog()
+                self.show_status("modalità amministratore attiva")
+                return
+            if self._general_preferences_service.verify_admin_password(
+                password.value or ""
+            ):
+                self._set_admin_mode(True)
+                self._close_dialog()
+                self.show_status("modalità amministratore attiva")
+                return
+            result_text.value = "Password amministratore non valida"
+            self._update_control(result_text)
+
+        dialog = ft.AlertDialog(
+            title=ft.Text(
+                "Imposta password amministratore"
+                if first_setup
+                else (
+                    "Amministratore attivo"
+                    if admin_active
+                    else "Sblocca amministratore"
+                )
+            ),
+            content=ft.Container(
+                width=400,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                "Prima configurazione: scegli una password "
+                                "per proteggere le impostazioni avanzate."
+                            )
+                            if first_setup
+                            else (
+                                "Le impostazioni avanzate sono attualmente sbloccate."
+                                if admin_active
+                                else "Inserisci la password per modificare le impostazioni avanzate."
+                            )
+                        ),
+                        password,
+                        confirm_password,
+                        result_text,
+                    ],
+                    tight=True,
+                    spacing=10,
+                ),
+            ),
+            actions=[
+                ft.TextButton("Annulla", on_click=lambda _: self._close_dialog()),
+                *(
+                    [ft.FilledButton("Logout", on_click=logout)]
+                    if admin_active
+                    else [
+                        ft.FilledButton(
+                            "Imposta" if first_setup else "Sblocca",
+                            on_click=unlock,
+                        )
+                    ]
+                ),
+            ],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
+    def _set_admin_mode(self, enabled: bool) -> None:
+        self._admin_mode = enabled
+        if self._security_button is not None:
+            self._security_button.icon = (
+                self._ft.Icons.LOCK_OPEN if enabled else self._ft.Icons.LOCK
+            )
+            self._security_button.tooltip = (
+                "Modalità amministratore attiva"
+                if enabled
+                else "Sblocca impostazioni amministratore"
+            )
+        self._page.update()
+
+    def show_startup_user_confirmation(self) -> bool:
+        if self._general_preferences_service is None:
+            return False
+        settings = self._general_preferences_service.get_erp_user_settings()
+        if not settings.selected_user_name:
+            return False
+        ft = self._ft
+
+        def confirm(_: object) -> None:
+            self._general_preferences_service.log_erp_user_session_selection(
+                settings,
+                source="startup_confirmation",
+            )
+            self._close_dialog()
+
+        def replace(_: object) -> None:
+            self._close_dialog()
+            self.show_user_preferences()
+
+        selected_user = self._selected_user_summary(
+            settings.selected_user_id,
+            settings.selected_user_name,
+        )
+        dialog = ft.AlertDialog(
+            title=ft.Text("Utente operativo"),
+            content=ft.Column(
+                controls=[
+                    ft.Text("Utente selezionato per questa sessione di lavoro:"),
+                    ft.Text(selected_user, weight=ft.FontWeight.BOLD),
+                ],
+                tight=True,
+                spacing=8,
+            ),
+            actions=[
+                ft.TextButton("Sostituisci", on_click=replace),
+                ft.FilledButton("Conferma", on_click=confirm),
+            ],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+        return True
+
     def _certificate_status_text(self) -> str:
         if self._certificate_service is None:
             return "Certificato: non disponibile"
@@ -434,6 +628,22 @@ class MainView:
         if certificate is None:
             return "Certificato: nessun certificato attivo"
         return f"Certificato: {certificate.name} attivo"
+
+    def _active_user_status_text(self) -> str:
+        if self._general_preferences_service is None:
+            return ""
+        settings = self._general_preferences_service.get_erp_user_settings()
+        if not settings.selected_user_name:
+            return ""
+        return f"Utente: {settings.selected_user_name}"
+
+    @staticmethod
+    def _selected_user_summary(user_id: str, user_name: str) -> str:
+        if not user_name:
+            return "Nessun utente selezionato"
+        if user_id:
+            return f"{user_name} ({user_id})"
+        return user_name
 
     def clear_document(self) -> None:
         self._pdf_image.visible = False
@@ -448,6 +658,7 @@ class MainView:
         self._document_name.value = "Nessun documento"
         self._page_count.value = "Pagina — / —"
         self._zoom.value = "Zoom: 100%"
+        self._active_user.value = self._active_user_status_text()
         self.show_certificate_status()
 
     def show_error(self, message: str) -> None:
@@ -461,7 +672,11 @@ class MainView:
         if enabled:
             self.show_status("documento sconosciuto: disegna il rettangolo firma")
 
-    def ask_save_template(self, on_confirm: Callable[[], None]) -> None:
+    def ask_save_template(
+        self,
+        on_confirm: Callable[[], None],
+        on_cancel: Callable[[], None],
+    ) -> None:
         ft = self._ft
 
         def confirm(_: object) -> None:
@@ -470,7 +685,7 @@ class MainView:
 
         def cancel(_: object) -> None:
             self._close_dialog()
-            self.show_status("modello non salvato")
+            on_cancel()
 
         dialog = ft.AlertDialog(
             title=ft.Text("Informazioni"),
@@ -629,53 +844,138 @@ class MainView:
         ft = self._ft
         self._close_dialog()
         documents = self._signed_history_documents()
-        if documents:
-            content: object = ft.ListView(
-                controls=[
-                    ft.DataTable(
-                        columns=[
-                            ft.DataColumn(ft.Text("Nome file")),
-                            ft.DataColumn(ft.Text("Creato il")),
-                            ft.DataColumn(ft.Text("Apri")),
-                        ],
-                        rows=[
-                            ft.DataRow(
-                                cells=[
-                                    ft.DataCell(
-                                        ft.TextButton(
-                                            path.name,
-                                            on_click=lambda _, item=path: self._open_signed_file(
-                                                item
-                                            ),
-                                        )
-                                    ),
-                                    ft.DataCell(
-                                        ft.Text(self._format_file_created_at(path))
-                                    ),
-                                    ft.DataCell(
-                                        ft.IconButton(
-                                            icon=ft.Icons.FOLDER_OPEN,
-                                            tooltip="Apri documento firmato",
-                                            on_click=lambda _, item=path: self._open_signed_file(
-                                                item
-                                            ),
-                                        )
-                                    ),
-                                ]
-                            )
-                            for path in documents
-                        ],
-                        column_spacing=28,
-                    )
-                ],
-                spacing=0,
+        search = ft.TextField(
+            label="Cerca documento",
+            prefix_icon=ft.Icons.SEARCH,
+            width=420,
+        )
+        sort_state = {"field": "created_at", "ascending": False}
+        table_container = ft.Container(expand=True)
+
+        def sort_label(field: str, label: str) -> str:
+            if sort_state["field"] != field:
+                return label
+            return f"{label} {'ASC' if sort_state['ascending'] else 'DESC'}"
+
+        def filtered_documents() -> list[Path]:
+            query = (search.value or "").strip().lower()
+            items = [
+                path
+                for path in documents
+                if not query or query in path.name.lower()
+            ]
+            if sort_state["field"] == "name":
+                key = lambda path: path.name.lower()
+            else:
+                key = lambda path: path.stat().st_ctime
+            return sorted(
+                items,
+                key=key,
+                reverse=not bool(sort_state["ascending"]),
             )
-        else:
-            content = ft.Text("Nessun documento firmato trovato")
+
+        def sort_by(field: str) -> None:
+            if sort_state["field"] == field:
+                sort_state["ascending"] = not bool(sort_state["ascending"])
+            else:
+                sort_state["field"] = field
+                sort_state["ascending"] = field == "name"
+            render_table()
+
+        def render_table(_: object | None = None) -> None:
+            rows = filtered_documents()
+            if not documents:
+                table_container.content = ft.Container(
+                    content=ft.Text("Nessun documento firmato trovato"),
+                    alignment=ft.Alignment(0, -1),
+                    padding=12,
+                )
+            elif not rows:
+                table_container.content = ft.Container(
+                    content=ft.Text("Nessun documento corrisponde alla ricerca"),
+                    alignment=ft.Alignment(0, -1),
+                    padding=12,
+                )
+            else:
+                table_container.content = ft.ListView(
+                    controls=[
+                        ft.DataTable(
+                            columns=[
+                                ft.DataColumn(
+                                    ft.TextButton(
+                                        sort_label("name", "Nome file"),
+                                        on_click=lambda _: sort_by("name"),
+                                    )
+                                ),
+                                ft.DataColumn(
+                                    ft.TextButton(
+                                        sort_label("created_at", "Creato il"),
+                                        on_click=lambda _: sort_by("created_at"),
+                                    )
+                                ),
+                                ft.DataColumn(ft.Text("Apri")),
+                            ],
+                            rows=[
+                                ft.DataRow(
+                                    cells=[
+                                        ft.DataCell(
+                                            ft.Container(
+                                                content=ft.TextButton(
+                                                    path.name,
+                                                    on_click=lambda _, item=path: self._open_signed_file(
+                                                        item
+                                                    ),
+                                                ),
+                                                alignment=ft.Alignment(-1, 0),
+                                                width=560,
+                                            )
+                                        ),
+                                        ft.DataCell(
+                                            ft.Container(
+                                                content=ft.Text(
+                                                    self._format_file_created_at(path),
+                                                    text_align=ft.TextAlign.LEFT,
+                                                ),
+                                                width=150,
+                                            )
+                                        ),
+                                        ft.DataCell(
+                                            ft.IconButton(
+                                                icon=ft.Icons.FOLDER_OPEN,
+                                                tooltip="Apri documento firmato",
+                                                on_click=lambda _, item=path: self._open_signed_file(
+                                                    item
+                                                ),
+                                            )
+                                        ),
+                                    ]
+                                )
+                                for path in rows
+                            ],
+                            column_spacing=24,
+                        )
+                    ],
+                    spacing=0,
+                )
+            self._update_control(table_container)
+
+        search.on_change = render_table
+        render_table()
 
         dialog = ft.AlertDialog(
             title=ft.Text("Storico documenti firmati"),
-            content=ft.Container(width=720, height=420, content=content),
+            content=ft.Container(
+                width=840,
+                height=520,
+                content=ft.Column(
+                    controls=[
+                        search,
+                        table_container,
+                    ],
+                    tight=True,
+                    spacing=10,
+                ),
+            ),
             actions=[ft.TextButton("Chiudi", on_click=lambda _: self._close_dialog())],
         )
         self._active_dialog = dialog
@@ -705,6 +1005,14 @@ class MainView:
             label="Sincronizza automaticamente i template all'avvio",
             value=settings.auto_sync_templates_on_startup,
         )
+        auto_save_signed_documents = ft.Checkbox(
+            label="Salvataggio Automatico",
+            value=settings.auto_save_signed_documents,
+        )
+        show_signature_text = ft.Checkbox(
+            label="Mostra testo nel riquadro firma",
+            value=settings.show_signature_text,
+        )
         result_text = ft.Text("")
 
         def current_settings() -> SupabaseSettings:
@@ -713,6 +1021,10 @@ class MainView:
                 password=supabase_password.value or "",
                 table_name=supabase_table.value or "SaluteLavoro",
                 auto_sync_templates_on_startup=bool(auto_sync_templates.value),
+                auto_save_signed_documents=bool(
+                    auto_save_signed_documents.value
+                ),
+                show_signature_text=bool(show_signature_text.value),
             )
 
         def set_result(message: str) -> None:
@@ -731,20 +1043,67 @@ class MainView:
             )
             set_result(result.message)
 
+        def verify_table(_: object) -> None:
+            result = self._general_preferences_service.test_supabase_template_table(
+                current_settings()
+            )
+            if result.success and not result.exists:
+                set_result(
+                    f"{result.message}. Premi 'Crea tabella' per duplicarla da SaluteLavoro."
+                )
+                return
+            set_result(result.message)
+
+        def create_table(_: object) -> None:
+            result = self._general_preferences_service.ensure_supabase_template_table(
+                current_settings()
+            )
+            set_result(result.message)
+
         dialog = ft.AlertDialog(
             title=ft.Text("Generali"),
             content=ft.Container(
                 width=520,
                 content=ft.Column(
                     controls=[
-                        ft.Text("Connessione Supabase", weight=ft.FontWeight.BOLD),
-                        supabase_url,
-                        supabase_password,
-                        supabase_table,
+                        *(
+                            [
+                                ft.Text(
+                                    "Connessione Supabase",
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                supabase_url,
+                                supabase_password,
+                                supabase_table,
+                            ]
+                            if self._admin_mode
+                            else [
+                                ft.Text(
+                                    "Impostazioni operative",
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                            ]
+                        ),
                         auto_sync_templates,
+                        auto_save_signed_documents,
+                        *([show_signature_text] if self._admin_mode else []),
                         ft.Row(
                             controls=[
-                                ft.OutlinedButton("Test", on_click=test),
+                                *(
+                                    [
+                                        ft.OutlinedButton("Test", on_click=test),
+                                        ft.OutlinedButton(
+                                            "Verifica tabella",
+                                            on_click=verify_table,
+                                        ),
+                                        ft.OutlinedButton(
+                                            "Crea tabella",
+                                            on_click=create_table,
+                                        ),
+                                    ]
+                                    if self._admin_mode
+                                    else []
+                                ),
                                 ft.FilledButton("Salva", on_click=save),
                             ],
                             wrap=True,
@@ -753,6 +1112,223 @@ class MainView:
                     ],
                     tight=True,
                     spacing=12,
+                ),
+            ),
+            actions=[ft.TextButton("Chiudi", on_click=lambda _: self._close_dialog())],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
+    def show_user_preferences(self) -> None:
+        ft = self._ft
+        if self._general_preferences_service is None:
+            self.show_error("Preferenze utenti non disponibili")
+            return
+        settings = self._general_preferences_service.get_erp_user_settings()
+        users_url = ft.TextField(
+            label="URL lista utenti ERP",
+            value=settings.users_url,
+            width=380,
+        )
+        basic_username = ft.TextField(
+            label="Utente Basic Auth",
+            value=settings.basic_username,
+            width=380,
+        )
+        basic_password = ft.TextField(
+            label="Password Basic Auth",
+            value=settings.basic_password,
+            password=True,
+            can_reveal_password=True,
+            width=380,
+        )
+        selected_user_id = settings.selected_user_id
+        selected_user_name = settings.selected_user_name
+        selected_summary = ft.Text(
+            self._selected_user_summary(selected_user_id, selected_user_name)
+        )
+        users_list = ft.ListView(height=220, spacing=4)
+        result_text = ft.Text("")
+
+        def current_settings() -> ErpUserSettings:
+            return ErpUserSettings(
+                users_url=users_url.value or "",
+                basic_username=basic_username.value or "",
+                basic_password=basic_password.value or "",
+                selected_user_id=selected_user_id,
+                selected_user_name=selected_user_name,
+            )
+
+        def set_result(message: str) -> None:
+            result_text.value = message
+            self._update_control(result_text)
+
+        def select_user(user: ErpUser) -> None:
+            nonlocal selected_user_id, selected_user_name
+            selected_user_id = user.user_id
+            selected_user_name = user.display_name
+            selected_summary.value = self._selected_user_summary(
+                selected_user_id, selected_user_name
+            )
+            self._general_preferences_service.save_erp_user_settings(
+                current_settings()
+            )
+            self._general_preferences_service.log_erp_user_session_selection(
+                current_settings(),
+                source="user_preferences_selection",
+            )
+            self.show_active_user_status()
+            self._update_control(selected_summary)
+            set_result(f"Utente salvato: {user.display_name}")
+
+        def user_row(user: ErpUser) -> object:
+            return ft.Row(
+                controls=[
+                    ft.Text(user.display_name, expand=True),
+                    ft.Text(user.user_id, width=140),
+                    ft.OutlinedButton(
+                        "Seleziona",
+                        on_click=lambda _, item=user: select_user(item),
+                    ),
+                ],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+
+        def load_users(_: object) -> None:
+            result = self._general_preferences_service.fetch_erp_users(
+                current_settings()
+            )
+            users_list.controls = [user_row(user) for user in result.users]
+            self._update_control(users_list)
+            set_result(result.message)
+
+        def test_users(_: object) -> None:
+            result = self._general_preferences_service.fetch_erp_users(
+                current_settings()
+            )
+            if result.success:
+                set_result(
+                    f"Connessione utenti riuscita: {len(result.users)} utenti disponibili"
+                )
+            else:
+                set_result(result.message)
+
+        def save_settings(message: str) -> None:
+            self._general_preferences_service.save_erp_user_settings(
+                current_settings()
+            )
+            self.show_active_user_status()
+            set_result(message)
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Utenti"),
+            content=ft.Container(
+                width=920,
+                height=430,
+                content=ft.Row(
+                    controls=[
+                        ft.Container(
+                            width=400,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Connessione ERP",
+                                        weight=ft.FontWeight.BOLD,
+                                    ),
+                                    *(
+                                        [
+                                            users_url,
+                                            basic_username,
+                                            basic_password,
+                                        ]
+                                        if self._admin_mode
+                                        else [
+                                            ft.Text(
+                                                "Connessione configurata dall'amministratore"
+                                            )
+                                        ]
+                                    ),
+                                    ft.Row(
+                                        controls=[
+                                            *(
+                                                [
+                                                    ft.OutlinedButton(
+                                                        "Test",
+                                                        on_click=test_users,
+                                                    ),
+                                                ]
+                                                if self._admin_mode
+                                                else []
+                                            ),
+                                            ft.OutlinedButton(
+                                                "Carica utenti",
+                                                on_click=load_users,
+                                            ),
+                                            *(
+                                                [
+                                                    ft.OutlinedButton(
+                                                        "Salva connessione",
+                                                        on_click=lambda _: save_settings(
+                                                            "Impostazioni utenti salvate"
+                                                        ),
+                                                    ),
+                                                ]
+                                                if self._admin_mode
+                                                else []
+                                            ),
+                                        ],
+                                        wrap=True,
+                                    ),
+                                    result_text,
+                                ],
+                                spacing=10,
+                            ),
+                        ),
+                        ft.VerticalDivider(width=1),
+                        ft.Container(
+                            width=460,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Utente operativo",
+                                        weight=ft.FontWeight.BOLD,
+                                    ),
+                                    ft.Container(
+                                        content=selected_summary,
+                                        padding=10,
+                                        border=ft.Border(
+                                            left=ft.BorderSide(
+                                                1,
+                                                ft.Colors.GREY_500,
+                                            ),
+                                            top=ft.BorderSide(
+                                                1,
+                                                ft.Colors.GREY_500,
+                                            ),
+                                            right=ft.BorderSide(
+                                                1,
+                                                ft.Colors.GREY_500,
+                                            ),
+                                            bottom=ft.BorderSide(
+                                                1,
+                                                ft.Colors.GREY_500,
+                                            ),
+                                        ),
+                                        width=440,
+                                    ),
+                                    ft.Divider(),
+                                    ft.Text(
+                                        "Utenti disponibili",
+                                        weight=ft.FontWeight.BOLD,
+                                    ),
+                                    users_list,
+                                ],
+                                spacing=10,
+                            ),
+                        ),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    spacing=18,
                 ),
             ),
             actions=[ft.TextButton("Chiudi", on_click=lambda _: self._close_dialog())],
@@ -798,41 +1374,120 @@ class MainView:
                 set_result(str(error))
 
         templates = self._local_learned_templates()
-        if templates:
-            content: object = ft.ListView(
-                controls=[
-                    ft.DataTable(
-                        columns=[
-                            ft.DataColumn(ft.Text("Template")),
-                            ft.DataColumn(ft.Text("Aggiornato il")),
-                        ],
-                        rows=[
-                            ft.DataRow(
-                                cells=[
-                                    ft.DataCell(ft.Text(path.name)),
-                                    ft.DataCell(
-                                        ft.Text(self._format_file_updated_at(path))
-                                    ),
-                                ]
-                            )
-                            for path in templates
-                        ],
-                        column_spacing=28,
-                    )
-                ],
-                spacing=0,
+        search = ft.TextField(
+            label="Cerca template",
+            prefix_icon=ft.Icons.SEARCH,
+            width=420,
+        )
+        sort_state = {"field": "updated_at", "ascending": False}
+        table_container = ft.Container(expand=True)
+
+        def sort_label(field: str, label: str) -> str:
+            if sort_state["field"] != field:
+                return label
+            return f"{label} {'ASC' if sort_state['ascending'] else 'DESC'}"
+
+        def filtered_templates() -> list[Path]:
+            query = (search.value or "").strip().lower()
+            items = [
+                path
+                for path in templates
+                if not query or query in path.name.lower()
+            ]
+            if sort_state["field"] == "template":
+                key = lambda path: path.name.lower()
+            else:
+                key = lambda path: path.stat().st_mtime
+            return sorted(
+                items,
+                key=key,
+                reverse=not bool(sort_state["ascending"]),
             )
-        else:
-            content = ft.Text("Nessun template documento trovato")
+
+        def sort_by(field: str) -> None:
+            if sort_state["field"] == field:
+                sort_state["ascending"] = not bool(sort_state["ascending"])
+            else:
+                sort_state["field"] = field
+                sort_state["ascending"] = field == "template"
+            render_table()
+
+        def render_table(_: object | None = None) -> None:
+            rows = filtered_templates()
+            if not templates:
+                table_container.content = ft.Container(
+                    content=ft.Text("Nessun template documento trovato"),
+                    alignment=ft.Alignment(0, -1),
+                    padding=12,
+                )
+            elif not rows:
+                table_container.content = ft.Container(
+                    content=ft.Text("Nessun template corrisponde alla ricerca"),
+                    alignment=ft.Alignment(0, -1),
+                    padding=12,
+                )
+            else:
+                table_container.content = ft.ListView(
+                    controls=[
+                        ft.DataTable(
+                            columns=[
+                                ft.DataColumn(
+                                    ft.TextButton(
+                                        sort_label("template", "Template"),
+                                        on_click=lambda _: sort_by("template"),
+                                    )
+                                ),
+                                ft.DataColumn(
+                                    ft.TextButton(
+                                        sort_label("updated_at", "Aggiornato il"),
+                                        on_click=lambda _: sort_by("updated_at"),
+                                    )
+                                ),
+                            ],
+                            rows=[
+                                ft.DataRow(
+                                    cells=[
+                                        ft.DataCell(
+                                            ft.Container(
+                                                content=ft.Text(
+                                                    path.name,
+                                                    no_wrap=True,
+                                                ),
+                                                width=600,
+                                            )
+                                        ),
+                                        ft.DataCell(
+                                            ft.Container(
+                                                content=ft.Text(
+                                                    self._format_file_updated_at(path),
+                                                    text_align=ft.TextAlign.LEFT,
+                                                ),
+                                                width=150,
+                                            )
+                                        ),
+                                    ]
+                                )
+                                for path in rows
+                            ],
+                            column_spacing=24,
+                        )
+                    ],
+                    spacing=0,
+                )
+            self._update_control(table_container)
+
+        search.on_change = render_table
+        render_table()
 
         dialog = ft.AlertDialog(
             title=ft.Text("Template Documenti"),
             content=ft.Container(
-                width=760,
-                height=460,
+                width=840,
+                height=520,
                 content=ft.Column(
                     controls=[
-                        ft.Container(content=content, expand=True),
+                        search,
+                        table_container,
                         ft.Row(
                             controls=[
                                 ft.OutlinedButton("Aggiorna", on_click=refresh),
@@ -921,21 +1576,36 @@ class MainView:
                         ft.Divider(),
                         ft.Row(
                             controls=[
-                                ft.OutlinedButton(
-                                    "Genera",
-                                    on_click=lambda _: self._show_generate_certificate_dialog(),
+                                *(
+                                    [
+                                        ft.OutlinedButton(
+                                            "Genera",
+                                            on_click=lambda _: self._show_generate_certificate_dialog(),
+                                        ),
+                                        ft.OutlinedButton(
+                                            "Importa PFX",
+                                            on_click=self._pick_pfx,
+                                        ),
+                                    ]
+                                    if self._admin_mode
+                                    else []
                                 ),
-                                ft.OutlinedButton("Importa PFX", on_click=self._pick_pfx),
                                 ft.OutlinedButton(
                                     "Seleziona certificato",
                                     on_click=lambda _: self._show_select_certificate_dialog(),
                                 ),
-                                ft.OutlinedButton(
-                                    "Cancella",
-                                    disabled=certificate is None,
-                                    on_click=lambda _: self._confirm_delete_certificate(
-                                        certificate
-                                    ),
+                                *(
+                                    [
+                                        ft.OutlinedButton(
+                                            "Cancella",
+                                            disabled=certificate is None,
+                                            on_click=lambda _: self._confirm_delete_certificate(
+                                                certificate
+                                            ),
+                                        ),
+                                    ]
+                                    if self._admin_mode
+                                    else []
                                 ),
                             ],
                             wrap=True,
@@ -1198,16 +1868,30 @@ class MainView:
         if certificates:
             controls = [
                 ft.TextButton(
-                    content=ft.Column(
-                        controls=[
-                            ft.Text(certificate.name),
-                            ft.Text(
-                                f"Scadenza: {self._format_system_date(certificate.valid_until)}",
-                                size=12,
-                            ),
-                        ],
-                        tight=True,
-                        spacing=2,
+                    content=ft.Container(
+                        content=ft.Column(
+                            controls=[
+                                ft.Text(certificate.name),
+                                ft.Text(
+                                    f"Scadenza: {self._format_system_date(certificate.valid_until)}",
+                                    size=12,
+                                ),
+                            ],
+                            horizontal_alignment=ft.CrossAxisAlignment.START,
+                            tight=True,
+                            spacing=2,
+                        ),
+                        alignment=ft.Alignment(-1, 0),
+                        width=460,
+                    ),
+                    style=ft.ButtonStyle(
+                        padding=ft.Padding(
+                            left=0,
+                            top=6,
+                            right=0,
+                            bottom=6,
+                        ),
+                        alignment=ft.Alignment(-1, 0),
                     ),
                     on_click=lambda _, cert=certificate: select_certificate(cert),
                 )
@@ -1395,7 +2079,6 @@ class MainView:
                     user32, ctypes, wintypes, title
                 )
                 for hwnd in hwnds:
-                    MainView._apply_windows_title_bar_colors(ctypes, wintypes, hwnd)
                     if big_icon:
                         user32.SendMessageW(hwnd, wm_seticon, icon_big, big_icon)
                         set_class_long(hwnd, gclp_hicon, big_icon)
@@ -1405,52 +2088,6 @@ class MainView:
                 time.sleep(0.25)
         except Exception:
             return
-
-    @staticmethod
-    def _apply_windows_title_bar_colors(
-        ctypes_module: object, wintypes_module: object, hwnd: int
-    ) -> None:
-        try:
-            dwmapi = ctypes_module.windll.dwmapi
-            dwmapi.DwmSetWindowAttribute.argtypes = [
-                wintypes_module.HWND,
-                ctypes_module.c_uint,
-                ctypes_module.c_void_p,
-                ctypes_module.c_uint,
-            ]
-            dwmapi.DwmSetWindowAttribute.restype = ctypes_module.c_long
-            caption_color = wintypes_module.DWORD(
-                MainView._windows_colorref_from_hex("1f3c98")
-            )
-            text_color = wintypes_module.DWORD(
-                MainView._windows_colorref_from_hex("ffffff")
-            )
-            dwmapi.DwmSetWindowAttribute(
-                hwnd,
-                35,
-                ctypes_module.cast(
-                    ctypes_module.byref(caption_color), ctypes_module.c_void_p
-                ),
-                ctypes_module.sizeof(caption_color),
-            )
-            dwmapi.DwmSetWindowAttribute(
-                hwnd,
-                36,
-                ctypes_module.cast(
-                    ctypes_module.byref(text_color), ctypes_module.c_void_p
-                ),
-                ctypes_module.sizeof(text_color),
-            )
-        except Exception:
-            return
-
-    @staticmethod
-    def _windows_colorref_from_hex(value: str) -> int:
-        normalized = value.strip().lstrip("#")
-        red = int(normalized[0:2], 16)
-        green = int(normalized[2:4], 16)
-        blue = int(normalized[4:6], 16)
-        return red | (green << 8) | (blue << 16)
 
     @staticmethod
     def _find_windows_windows_by_title(

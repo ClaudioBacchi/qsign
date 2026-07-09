@@ -67,6 +67,7 @@ class PDFDigitalSignatureWriterTests(unittest.TestCase):
                     location="Forli",
                     contact_info="privacy@example.test",
                 ),
+                visible_text_provider=lambda: True,
             )
 
             writer.sign_pdf(
@@ -80,6 +81,17 @@ class PDFDigitalSignatureWriterTests(unittest.TestCase):
             self.assertIn(b"/Contents", content)
             self.assertIn(b"/FT /Sig", content.replace(b"/FT/Sig", b"/FT /Sig"))
             self.assertIn(b"/adbe.pkcs7.detached", content)
+            signed_document = pymupdf.open(destination)
+            try:
+                visible_text = signed_document.load_page(0).get_text()
+            finally:
+                signed_document.close()
+            self.assertIn("Firmato Digitalmente", visible_text)
+            self.assertNotIn("Firmato digitalmente da: QSign Test", visible_text)
+            self.assertIn("Motivo: Privacy", visible_text)
+            self.assertIn("Luogo: Forli", visible_text)
+            self.assertIn("Contatto: privacy@example.test", visible_text)
+            self.assertNotIn("Digitally signed by", visible_text)
             with destination.open("rb") as output:
                 signature = list(PdfFileReader(output).embedded_signatures)[0]
                 self.assertEqual(str(signature.sig_object["/Reason"]), "Privacy")
@@ -88,6 +100,39 @@ class PDFDigitalSignatureWriterTests(unittest.TestCase):
                     str(signature.sig_object["/ContactInfo"]),
                     "privacy@example.test",
                 )
+
+    def test_pyhanko_writer_omits_visible_text_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.pdf"
+            destination = Path(directory) / "signed.pdf"
+            _create_pdf(source)
+            writer = PyHankoDigitalSignatureWriter(
+                certificate_service=FakeExportingCertificateService(),
+                logger=LoggingService.create("qsign.tests.digital_signature_writer"),
+                metadata_provider=lambda: SignatureMetadata(
+                    reason="Privacy",
+                    location="Forli",
+                    contact_info="privacy@example.test",
+                ),
+                visible_text_provider=lambda: False,
+            )
+
+            writer.sign_pdf(
+                source=source,
+                destination=destination,
+                area=SignatureArea(page_index=0, x=40, y=50, width=120, height=50),
+            )
+
+            signed_document = pymupdf.open(destination)
+            try:
+                visible_text = signed_document.load_page(0).get_text()
+            finally:
+                signed_document.close()
+            self.assertNotIn("Firmato Digitalmente", visible_text)
+            self.assertNotIn("Motivo: Privacy", visible_text)
+            with destination.open("rb") as output:
+                signature = list(PdfFileReader(output).embedded_signatures)[0]
+                self.assertEqual(str(signature.sig_object["/Reason"]), "Privacy")
 
     def test_pyhanko_writer_can_sign_while_event_loop_is_running(self) -> None:
         async def sign_from_event_loop() -> bytes:

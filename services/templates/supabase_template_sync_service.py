@@ -15,6 +15,7 @@ from app.services.general_preferences_service import (
     GeneralPreferencesService,
     SupabaseSettings,
 )
+from services.logging.logging_service import LoggingService
 
 
 class SupabaseTemplateSyncServiceError(RuntimeError):
@@ -43,10 +44,12 @@ class SupabaseTemplateSyncService:
         preferences_service: GeneralPreferencesService,
         template_root: str | Path = "templates",
         opener: Callable[..., object] | None = None,
+        logger: LoggingService | None = None,
     ) -> None:
         self._preferences_service = preferences_service
         self._template_root = Path(template_root)
         self._opener = opener or urllib.request.urlopen
+        self._logger = logger
 
     def list_local_templates(self) -> tuple[LearnedTemplateFile, ...]:
         if not self._template_root.is_dir():
@@ -63,6 +66,11 @@ class SupabaseTemplateSyncService:
 
     def upload_templates(self) -> TemplateSyncResult:
         settings = self._validated_settings()
+        self._log_info(
+            "Template upload started",
+            table=settings.table_name,
+            template_root=str(self._template_root),
+        )
         rows = [
             {
                 "template_id": item.template_id,
@@ -72,6 +80,7 @@ class SupabaseTemplateSyncService:
             for item in self.list_local_templates()
         ]
         if not rows:
+            self._log_info("Template upload skipped: no local templates")
             return TemplateSyncResult()
         self._request(
             settings,
@@ -85,10 +94,16 @@ class SupabaseTemplateSyncService:
                 "Prefer": "resolution=merge-duplicates",
             },
         )
+        self._log_info("Template upload completed", uploaded=len(rows))
         return TemplateSyncResult(uploaded=len(rows))
 
     def download_templates(self) -> TemplateSyncResult:
         settings = self._validated_settings()
+        self._log_info(
+            "Template download started",
+            table=settings.table_name,
+            template_root=str(self._template_root),
+        )
         remote_rows = self._fetch_remote_rows(settings)
         downloaded = 0
         skipped = 0
@@ -116,16 +131,30 @@ class SupabaseTemplateSyncService:
                 encoding="utf-8",
             )
             downloaded += 1
-        return TemplateSyncResult(downloaded=downloaded, skipped=skipped)
+        result = TemplateSyncResult(downloaded=downloaded, skipped=skipped)
+        self._log_info(
+            "Template download completed",
+            downloaded=result.downloaded,
+            skipped=result.skipped,
+        )
+        return result
 
     def sync_templates(self) -> TemplateSyncResult:
+        self._log_info("Template synchronization started")
         download_result = self.download_templates()
         upload_result = self.upload_templates()
-        return TemplateSyncResult(
+        result = TemplateSyncResult(
             uploaded=upload_result.uploaded,
             downloaded=download_result.downloaded,
             skipped=download_result.skipped + upload_result.skipped,
         )
+        self._log_info(
+            "Template synchronization completed",
+            uploaded=result.uploaded,
+            downloaded=result.downloaded,
+            skipped=result.skipped,
+        )
+        return result
 
     def _fetch_remote_rows(self, settings: SupabaseSettings) -> list[dict[str, Any]]:
         payload = self._request(
@@ -173,7 +202,7 @@ class SupabaseTemplateSyncService:
             message = error.read().decode("utf-8", errors="replace")
             error.close()
             raise SupabaseTemplateSyncServiceError(
-                self._format_http_error(error, message)
+                self._format_http_error(error, message, settings.table_name)
             ) from error
         except Exception as error:
             raise SupabaseTemplateSyncServiceError(
@@ -223,11 +252,25 @@ class SupabaseTemplateSyncService:
             return datetime.min.replace(tzinfo=UTC)
 
     @staticmethod
-    def _format_http_error(error: urllib.error.HTTPError, message: str) -> str:
-        if error.code == 401 and "row-level security policy" in message:
+    def _format_http_error(
+        error: urllib.error.HTTPError,
+        message: str,
+        table_name: str,
+    ) -> str:
+        lower_message = message.lower()
+        is_rls_error = (
+            "row-level security" in lower_message
+            or '"code":"42501"' in lower_message
+        )
+        if error.code in (401, 403) and is_rls_error:
             return (
-                "Errore Supabase 401: accesso negato dalla Row Level Security. "
-                "Crea una policy SELECT/INSERT/UPDATE sulla tabella dei template "
+                f"Errore Supabase {error.code}: accesso negato dalla "
+                f"Row Level Security sulla tabella '{table_name}'. "
+                "Crea una policy SELECT/INSERT/UPDATE su questa tabella "
                 "oppure usa una chiave con permessi adeguati."
             )
         return f"Errore Supabase {error.code}: {message or error.reason}"
+
+    def _log_info(self, message: str, **context: Any) -> None:
+        if self._logger is not None:
+            self._logger.info(message, **context)
