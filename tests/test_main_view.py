@@ -2,10 +2,16 @@
 
 import asyncio
 import base64
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from app.services.certificate_service import CertificateInfo, SignatureMetadata
+from app.services.general_preferences_service import (
+    SupabaseConnectionResult,
+    SupabaseSettings,
+)
 from models.document import Rectangle
 from ui.main_view import MainView
 
@@ -129,6 +135,149 @@ class MainViewTests(unittest.TestCase):
         root_column = page.controls[0]
         viewer = root_column.controls[1]
         self.assertEqual(viewer.bgcolor, view._ft.Colors.GREY_200)
+
+    def test_main_toolbar_has_text_menu_and_icon_shortcuts(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.build()
+
+        toolbar = page.controls[0].controls[0].content
+        self.assertEqual(page.title, "QSign by Queen Srl - queensrl.net")
+        menu_bar = toolbar.controls[0]
+        self.assertEqual(menu_bar.style.bgcolor, view._ft.Colors.TRANSPARENT)
+        self.assertEqual(menu_bar.style.elevation, 0)
+        self.assertEqual(
+            [control.content.value for control in menu_bar.controls],
+            ["Documenti", "Preferenze", "Informazioni"],
+        )
+        self.assertEqual(menu_bar.controls[0].style.bgcolor, view._ft.Colors.TRANSPARENT)
+        self.assertEqual(
+            [control.content.value for control in menu_bar.controls[0].controls],
+            ["Apri", "Chiudi", "Salva", "Storico", "Template"],
+        )
+        self.assertEqual(
+            [control.width for control in menu_bar.controls[0].controls],
+            [180, 180, 180, 180, 180],
+        )
+        self.assertEqual(
+            [control.content.value for control in menu_bar.controls[1].controls],
+            ["Generali", "Certificato"],
+        )
+        self.assertEqual(menu_bar.controls[1].controls[0].width, 180)
+        self.assertEqual(menu_bar.controls[1].controls[1].width, 180)
+
+        icon_toolbar = toolbar.controls[1]
+        tooltips = [
+            getattr(control, "tooltip", None)
+            for control in icon_toolbar.controls
+            if getattr(control, "tooltip", None)
+        ]
+        self.assertEqual(
+            tooltips,
+            [
+                "Apri",
+                "Salva",
+                "Chiudi",
+                "Storico",
+                "Pagina precedente",
+                "Pagina successiva",
+                "Zoom -",
+                "Zoom +",
+            ],
+        )
+
+    def test_windows_title_bar_colors_use_colorref_format(self) -> None:
+        self.assertEqual(MainView._windows_colorref_from_hex("1f3c98"), 0x00983C1F)
+        self.assertEqual(MainView._windows_colorref_from_hex("#ffffff"), 0x00FFFFFF)
+
+    def test_signed_history_lists_signed_documents_and_opens_selected_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_dir = Path(directory)
+            signed_pdf = signed_dir / "contratto_signed.pdf"
+            ignored_txt = signed_dir / "note.txt"
+            signed_pdf.write_bytes(b"%PDF")
+            ignored_txt.write_text("ignore", encoding="utf-8")
+            page = FakePage()
+            view = MainView(page, signed_history_directory=signed_dir)
+
+            view.show_signed_history()
+
+            self.assertEqual(page.dialog.title.value, "Storico documenti firmati")
+            table = page.dialog.content.content.controls[0]
+            self.assertEqual(len(table.rows), 1)
+            row = table.rows[0]
+            name_button = row.cells[0].content
+            self.assertEqual(name_button.content, "contratto_signed.pdf")
+            self.assertRegex(row.cells[1].content.value, r"\d{2}/\d{2}/\d{4} ")
+            open_button = row.cells[2].content
+            self.assertEqual(open_button.tooltip, "Apri documento firmato")
+
+            name_button.on_click(None)
+
+            self.assertEqual(page.launched_urls, [signed_pdf.resolve().as_uri()])
+
+    def test_signed_history_shows_empty_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            page = FakePage()
+            view = MainView(page, signed_history_directory=directory)
+
+            view.show_signed_history()
+
+            self.assertEqual(
+                page.dialog.content.content.value,
+                "Nessun documento firmato trovato",
+            )
+
+    def test_template_history_lists_learned_templates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = Path(directory)
+            learned = template_dir / "learned_privacy.json"
+            ignored = template_dir / "manual.json"
+            learned.write_text('{"template_id":"learned_privacy"}', encoding="utf-8")
+            ignored.write_text("{}", encoding="utf-8")
+            page = FakePage()
+            view = MainView(page, learned_template_directory=template_dir)
+
+            view.show_template_history()
+
+            self.assertEqual(page.dialog.title.value, "Template Documenti")
+            table = page.dialog.content.content.controls[0].content.controls[0]
+            self.assertEqual(len(table.rows), 1)
+            self.assertEqual(table.rows[0].cells[0].content.value, "learned_privacy.json")
+            self.assertRegex(table.rows[0].cells[1].content.value, r"\d{2}/\d{2}/\d{4} ")
+
+    def test_template_download_refreshes_template_grid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = Path(directory)
+            page = FakePage()
+            sync_service = FakeTemplateSyncService(template_dir)
+            view = MainView(
+                page,
+                template_sync_service=sync_service,
+                learned_template_directory=template_dir,
+            )
+
+            view.show_template_history()
+            self.assertEqual(
+                page.dialog.content.content.controls[0].content.value,
+                "Nessun template documento trovato",
+            )
+
+            button_row = page.dialog.content.content.controls[1]
+            button_row.controls[1].on_click(None)
+
+            self.assertEqual(page.dialog.title.value, "Template Documenti")
+            table = page.dialog.content.content.controls[0].content.controls[0]
+            self.assertEqual(len(table.rows), 1)
+            self.assertEqual(
+                table.rows[0].cells[0].content.value,
+                "learned_synced.json",
+            )
+            self.assertEqual(
+                page.dialog.content.content.controls[2].value,
+                "Scaricati 1, invariati 0",
+            )
 
     def test_anchor_overlay_is_rendered_above_pdf_image(self) -> None:
         page = FakePage()
@@ -405,12 +554,36 @@ class MainViewTests(unittest.TestCase):
         self.assertIn(b"polyline", captured[0].content)
 
     def test_information_uses_the_current_flet_dialog_api(self) -> None:
-        page = FakePage()
-        view = MainView(page)
+        with tempfile.TemporaryDirectory() as directory:
+            app_config = Path(directory) / "app.yaml"
+            app_config.write_text('version: "01.001.001"', encoding="utf-8")
+            page = FakePage()
+            view = MainView(page, app_config_path=app_config)
 
-        view.show_information()
+            view.show_information()
 
-        self.assertEqual(page.dialog.title.value, "QSign")
+            self.assertIsNone(page.dialog.title)
+            controls = page.dialog.content.content.controls
+            self.assertEqual(controls[0].content.src, "images/logo_qsign_grande.png")
+            self.assertEqual(controls[1].value, "Versione: 01.001.001")
+            site_button = controls[3].controls[1]
+            support_button = controls[4].controls[1]
+            footer = controls[5]
+            self.assertEqual(site_button.content, "queensrl.net")
+            self.assertEqual(support_button.content, "assistenza@qss.it")
+            self.assertEqual(
+                footer.controls[0].value,
+                "Diritto di Autore @ 2026 Queen Srl. Tutti i diritti riservati",
+            )
+            self.assertEqual(footer.controls[1].src, "images/logo_queen_25anni.png")
+
+            site_button.on_click(None)
+            support_button.on_click(None)
+
+            self.assertEqual(
+                page.launched_urls,
+                ["https://queensrl.net", "mailto:assistenza@qss.it"],
+            )
 
     def test_certificate_child_dialog_replaces_preferences_dialog(self) -> None:
         page = FakePage()
@@ -457,6 +630,36 @@ class MainViewTests(unittest.TestCase):
             view._document_status.value,
             "Certificato: Claudio Bacchi attivo",
         )
+
+    def test_general_preferences_save_and_test_supabase_settings(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        view = MainView(page, general_preferences_service=service)
+
+        view.show_general_preferences()
+        controls = page.dialog.content.content.controls
+        controls[1].value = "https://demo.supabase.co"
+        controls[2].value = "secret"
+        controls[3].value = "SaluteLavoro"
+        controls[4].value = True
+        controls[5].controls[0].on_click(None)
+
+        self.assertEqual(
+            controls[6].value,
+            "Connessione Supabase riuscita",
+        )
+        controls[5].controls[1].on_click(None)
+
+        self.assertEqual(
+            service.settings,
+            SupabaseSettings(
+                project_url="https://demo.supabase.co",
+                password="secret",
+                table_name="SaluteLavoro",
+                auto_sync_templates_on_startup=True,
+            ),
+        )
+        self.assertEqual(controls[6].value, "Impostazioni salvate")
 
     def test_certificate_preferences_do_not_show_global_signature_reason_editor(
         self,
@@ -573,3 +776,50 @@ class FakeCertificateService:
     ) -> CertificateInfo:
         self.generated_names.append((first_name, last_name))
         return self.get_active_certificate()
+
+
+class FakeGeneralPreferencesService:
+    def __init__(self) -> None:
+        self.settings = SupabaseSettings()
+
+    def get_supabase_settings(self) -> SupabaseSettings:
+        return self.settings
+
+    def save_supabase_settings(self, settings: SupabaseSettings) -> None:
+        self.settings = settings
+
+    def test_supabase_connection(
+        self, settings: SupabaseSettings | None = None
+    ) -> SupabaseConnectionResult:
+        return SupabaseConnectionResult(True, "Connessione Supabase riuscita")
+
+
+class FakeTemplateSyncResult:
+    def __init__(
+        self,
+        uploaded: int = 0,
+        downloaded: int = 0,
+        skipped: int = 0,
+    ) -> None:
+        self.uploaded = uploaded
+        self.downloaded = downloaded
+        self.skipped = skipped
+
+
+class FakeTemplateSyncService:
+    def __init__(self, template_dir: Path) -> None:
+        self._template_dir = template_dir
+
+    def download_templates(self) -> FakeTemplateSyncResult:
+        (self._template_dir / "learned_synced.json").write_text(
+            '{"template_id":"learned_synced"}',
+            encoding="utf-8",
+        )
+        return FakeTemplateSyncResult(downloaded=1)
+
+    def upload_templates(self) -> FakeTemplateSyncResult:
+        return FakeTemplateSyncResult(uploaded=1)
+
+    def sync_templates(self) -> FakeTemplateSyncResult:
+        self.download_templates()
+        return FakeTemplateSyncResult(uploaded=1, downloaded=1)

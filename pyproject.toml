@@ -21,3 +21,6 @@ qsign = "app.main:run"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*", "config*", "models*", "services*", "ui*"]
+
+[tool.setuptools.package-data]
+config = ["app.yaml"]

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from app.pdf_viewer_controller import PDFViewerController
 from app.services.certificate_service import CertificateService
+from app.services.general_preferences_service import GeneralPreferencesService
 from services.anchors.anchor_detector import AnchorDetector
 from services.logging.logging_service import LoggingService
 from services.pdf.pdf_service import PDFService
@@ -17,6 +18,10 @@ from services.pdf.providers.pyhanko_digital_signature_writer import (
     PyHankoDigitalSignatureWriter,
 )
 from services.templates.template_repository import FilesystemTemplateRepository
+from services.templates.supabase_template_sync_service import (
+    SupabaseTemplateSyncService,
+    SupabaseTemplateSyncServiceError,
+)
 
 if TYPE_CHECKING:
     import flet as ft
@@ -38,6 +43,11 @@ class QSignApplication:
         anchor_detector = AnchorDetector(logger=self._logger)
         template_repository = FilesystemTemplateRepository("templates")
         certificate_service = CertificateService()
+        general_preferences_service = GeneralPreferencesService()
+        template_sync_service = SupabaseTemplateSyncService(
+            preferences_service=general_preferences_service,
+            template_root="templates",
+        )
         digital_signature_writer = PyHankoDigitalSignatureWriter(
             certificate_service=certificate_service,
             logger=self._logger,
@@ -53,7 +63,12 @@ class QSignApplication:
             signature_writer=signature_writer,
             logger=self._logger,
         )
-        view = MainView(page=page, certificate_service=certificate_service)
+        view = MainView(
+            page=page,
+            certificate_service=certificate_service,
+            general_preferences_service=general_preferences_service,
+            template_sync_service=template_sync_service,
+        )
         controller = PDFViewerController(
             pdf_service=pdf_service,
             view=view,
@@ -74,4 +89,28 @@ class QSignApplication:
             on_signature_area_click=controller.open_signature_dialog,
         )
         view.build()
+        self._sync_templates_on_startup(
+            general_preferences_service,
+            template_sync_service,
+        )
         page.on_close = lambda _: controller.shutdown()
+
+    def _sync_templates_on_startup(
+        self,
+        general_preferences_service: GeneralPreferencesService,
+        template_sync_service: SupabaseTemplateSyncService,
+    ) -> None:
+        settings = general_preferences_service.get_supabase_settings()
+        if not settings.auto_sync_templates_on_startup:
+            return
+        try:
+            result = template_sync_service.sync_templates()
+        except SupabaseTemplateSyncServiceError as error:
+            self._logger.warning("Startup template sync failed", error=str(error))
+            return
+        self._logger.info(
+            "Startup template sync completed",
+            uploaded=result.uploaded,
+            downloaded=result.downloaded,
+            skipped=result.skipped,
+        )

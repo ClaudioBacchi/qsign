@@ -17,7 +17,15 @@ from app.services.certificate_service import (
     CertificateService,
     CertificateServiceError,
 )
+from app.services.general_preferences_service import (
+    GeneralPreferencesService,
+    SupabaseSettings,
+)
 from services.signature.signature_service import CapturedSignature
+from services.templates.supabase_template_sync_service import (
+    SupabaseTemplateSyncService,
+    SupabaseTemplateSyncServiceError,
+)
 
 if TYPE_CHECKING:
     import flet as ft
@@ -42,6 +50,11 @@ class MainView:
         self,
         page: "ft.Page",
         certificate_service: CertificateService | None = None,
+        general_preferences_service: GeneralPreferencesService | None = None,
+        template_sync_service: SupabaseTemplateSyncService | None = None,
+        signed_history_directory: str | Path = Path("dist") / "signed",
+        learned_template_directory: str | Path = "templates",
+        app_config_path: str | Path = Path("config") / "app.yaml",
     ) -> None:
         import flet as ft
         import flet.canvas as cv
@@ -50,6 +63,11 @@ class MainView:
         self._cv = cv
         self._page = page
         self._certificate_service = certificate_service
+        self._general_preferences_service = general_preferences_service
+        self._template_sync_service = template_sync_service
+        self._signed_history_directory = Path(signed_history_directory)
+        self._learned_template_directory = Path(learned_template_directory)
+        self._app_config_path = Path(app_config_path)
         self._on_open_document: Callable[[str], None] | None = None
         self._on_close: Callable[[], None] | None = None
         self._on_previous: Callable[[], None] | None = None
@@ -182,47 +200,18 @@ class MainView:
 
     def build(self) -> None:
         ft = self._ft
-        self._page.title = "QSign"
+        self._page.title = "QSign by Queen Srl - queensrl.net"
         self._page.padding = 0
         self._page.services.append(self._file_picker)
         self._page.services.append(self._pfx_file_picker)
         self._configure_window_icon()
-        toolbar = ft.Row(
+        toolbar = ft.Column(
             controls=[
-                ft.ElevatedButton("Apri PDF", on_click=self._pick_pdf),
-                ft.OutlinedButton(
-                    "Chiudi PDF", on_click=lambda _: self._invoke(self._on_close)
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.CHEVRON_LEFT,
-                    tooltip="Pagina precedente",
-                    on_click=lambda _: self._invoke(self._on_previous),
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.CHEVRON_RIGHT,
-                    tooltip="Pagina successiva",
-                    on_click=lambda _: self._invoke(self._on_next),
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.ZOOM_OUT,
-                    tooltip="Zoom -",
-                    on_click=lambda _: self._invoke(self._on_zoom_out),
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.ZOOM_IN,
-                    tooltip="Zoom +",
-                    on_click=lambda _: self._invoke(self._on_zoom_in),
-                ),
-                ft.OutlinedButton(
-                    "Salva PDF firmato",
-                    on_click=lambda _: self._invoke(self._on_save_signed_pdf),
-                ),
-                ft.TextButton(
-                    "Certificato",
-                    on_click=lambda _: self.show_certificate_preferences(),
-                ),
-                ft.TextButton("Informazioni", on_click=lambda _: self.show_information()),
-            ]
+                self._build_menu_bar(),
+                self._build_icon_toolbar(),
+            ],
+            tight=True,
+            spacing=4,
         )
         viewer = ft.Container(
             content=self._viewer_layers,
@@ -251,6 +240,128 @@ class MainView:
                 expand=True,
                 spacing=0,
             )
+        )
+
+    def _build_menu_bar(self) -> object:
+        ft = self._ft
+        menu_style = ft.MenuStyle(
+            bgcolor=ft.Colors.TRANSPARENT,
+            elevation=0,
+            padding=0,
+        )
+        menu_button_style = ft.ButtonStyle(
+            bgcolor=ft.Colors.TRANSPARENT,
+            elevation=0,
+            padding=ft.Padding(left=8, top=6, right=8, bottom=6),
+        )
+        menu_item_width = 180
+        return ft.MenuBar(
+            style=menu_style,
+            controls=[
+                ft.SubmenuButton(
+                    content=ft.Text("Documenti"),
+                    style=menu_button_style,
+                    controls=[
+                        ft.MenuItemButton(
+                            content=ft.Text("Apri"),
+                            width=menu_item_width,
+                            on_click=self._pick_pdf,
+                        ),
+                        ft.MenuItemButton(
+                            content=ft.Text("Chiudi"),
+                            width=menu_item_width,
+                            on_click=lambda _: self._invoke(self._on_close),
+                        ),
+                        ft.MenuItemButton(
+                            content=ft.Text("Salva"),
+                            width=menu_item_width,
+                            on_click=lambda _: self._invoke(self._on_save_signed_pdf),
+                        ),
+                        ft.MenuItemButton(
+                            content=ft.Text("Storico"),
+                            width=menu_item_width,
+                            on_click=lambda _: self.show_signed_history(),
+                        ),
+                        ft.MenuItemButton(
+                            content=ft.Text("Template"),
+                            width=menu_item_width,
+                            on_click=lambda _: self.show_template_history(),
+                        ),
+                    ],
+                ),
+                ft.SubmenuButton(
+                    content=ft.Text("Preferenze"),
+                    style=menu_button_style,
+                    controls=[
+                        ft.MenuItemButton(
+                            content=ft.Text("Generali"),
+                            width=menu_item_width,
+                            on_click=lambda _: self.show_general_preferences(),
+                        ),
+                        ft.MenuItemButton(
+                            content=ft.Text("Certificato"),
+                            width=menu_item_width,
+                            on_click=lambda _: self.show_certificate_preferences(),
+                        ),
+                    ],
+                ),
+                ft.MenuItemButton(
+                    content=ft.Text("Informazioni"),
+                    style=menu_button_style,
+                    on_click=lambda _: self.show_information(),
+                ),
+            ],
+        )
+
+    def _build_icon_toolbar(self) -> object:
+        ft = self._ft
+        return ft.Row(
+            controls=[
+                ft.IconButton(
+                    icon=ft.Icons.FILE_OPEN,
+                    tooltip="Apri",
+                    on_click=self._pick_pdf,
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.SAVE,
+                    tooltip="Salva",
+                    on_click=lambda _: self._invoke(self._on_save_signed_pdf),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.CLOSE,
+                    tooltip="Chiudi",
+                    on_click=lambda _: self._invoke(self._on_close),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.ARCHIVE,
+                    tooltip="Storico",
+                    on_click=lambda _: self.show_signed_history(),
+                ),
+                ft.VerticalDivider(width=12),
+                ft.IconButton(
+                    icon=ft.Icons.CHEVRON_LEFT,
+                    tooltip="Pagina precedente",
+                    on_click=lambda _: self._invoke(self._on_previous),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.CHEVRON_RIGHT,
+                    tooltip="Pagina successiva",
+                    on_click=lambda _: self._invoke(self._on_next),
+                ),
+                ft.VerticalDivider(width=12),
+                ft.IconButton(
+                    icon=ft.Icons.ZOOM_OUT,
+                    tooltip="Zoom -",
+                    on_click=lambda _: self._invoke(self._on_zoom_out),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.ZOOM_IN,
+                    tooltip="Zoom +",
+                    on_click=lambda _: self._invoke(self._on_zoom_in),
+                ),
+            ],
+            spacing=2,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
     async def _pick_pdf(self, _: object) -> None:
@@ -362,7 +473,7 @@ class MainView:
             self.show_status("modello non salvato")
 
         dialog = ft.AlertDialog(
-            title=ft.Text("QSign"),
+            title=ft.Text("Informazioni"),
             content=ft.Text("Vuoi salvare questo modello per i prossimi documenti?"),
             actions=[
                 ft.TextButton("No", on_click=cancel),
@@ -441,8 +552,310 @@ class MainView:
     def show_information(self) -> None:
         ft = self._ft
         dialog = ft.AlertDialog(
-            title=ft.Text("QSign"),
-            content=ft.Text("Document Rendering — Milestone 2"),
+            content=ft.Container(
+                width=620,
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            content=ft.Image(
+                                src="images/logo_qsign_grande.png",
+                                width=420,
+                                height=150,
+                                fit=ft.BoxFit.CONTAIN,
+                                semantics_label="QSign",
+                            ),
+                            alignment=ft.Alignment(0, 0),
+                        ),
+                        ft.Text(
+                            f"Versione: {self._app_version()}",
+                            weight=ft.FontWeight.BOLD,
+                            text_align=ft.TextAlign.CENTER,
+                        ),
+                        ft.Divider(),
+                        ft.Row(
+                            controls=[
+                                ft.Text("Sito ufficiale:", weight=ft.FontWeight.BOLD),
+                                ft.TextButton(
+                                    "queensrl.net",
+                                    on_click=lambda _: self._open_url(
+                                        "https://queensrl.net"
+                                    ),
+                                ),
+                            ],
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Text("Supporto:", weight=ft.FontWeight.BOLD),
+                                ft.TextButton(
+                                    "assistenza@qss.it",
+                                    on_click=lambda _: self._open_url(
+                                        "mailto:assistenza@qss.it"
+                                    ),
+                                ),
+                            ],
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Text(
+                                    "Diritto di Autore @ 2026 Queen Srl. "
+                                    "Tutti i diritti riservati",
+                                    size=12,
+                                ),
+                                ft.Image(
+                                    src="images/logo_queen_25anni.png",
+                                    width=170,
+                                    height=55,
+                                    fit=ft.BoxFit.CONTAIN,
+                                    semantics_label="Queen Srl",
+                                ),
+                            ],
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                    spacing=12,
+                ),
+            ),
+            actions=[ft.TextButton("Chiudi", on_click=lambda _: self._close_dialog())],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
+    def show_signed_history(self) -> None:
+        ft = self._ft
+        self._close_dialog()
+        documents = self._signed_history_documents()
+        if documents:
+            content: object = ft.ListView(
+                controls=[
+                    ft.DataTable(
+                        columns=[
+                            ft.DataColumn(ft.Text("Nome file")),
+                            ft.DataColumn(ft.Text("Creato il")),
+                            ft.DataColumn(ft.Text("Apri")),
+                        ],
+                        rows=[
+                            ft.DataRow(
+                                cells=[
+                                    ft.DataCell(
+                                        ft.TextButton(
+                                            path.name,
+                                            on_click=lambda _, item=path: self._open_signed_file(
+                                                item
+                                            ),
+                                        )
+                                    ),
+                                    ft.DataCell(
+                                        ft.Text(self._format_file_created_at(path))
+                                    ),
+                                    ft.DataCell(
+                                        ft.IconButton(
+                                            icon=ft.Icons.FOLDER_OPEN,
+                                            tooltip="Apri documento firmato",
+                                            on_click=lambda _, item=path: self._open_signed_file(
+                                                item
+                                            ),
+                                        )
+                                    ),
+                                ]
+                            )
+                            for path in documents
+                        ],
+                        column_spacing=28,
+                    )
+                ],
+                spacing=0,
+            )
+        else:
+            content = ft.Text("Nessun documento firmato trovato")
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Storico documenti firmati"),
+            content=ft.Container(width=720, height=420, content=content),
+            actions=[ft.TextButton("Chiudi", on_click=lambda _: self._close_dialog())],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
+    def show_general_preferences(self) -> None:
+        ft = self._ft
+        if self._general_preferences_service is None:
+            self.show_error("Preferenze generali non disponibili")
+            return
+        settings = self._general_preferences_service.get_supabase_settings()
+        supabase_url = ft.TextField(
+            label="URL progetto Supabase",
+            value=settings.project_url,
+        )
+        supabase_password = ft.TextField(
+            label="Password/API key Supabase",
+            value=settings.password,
+            password=True,
+            can_reveal_password=True,
+        )
+        supabase_table = ft.TextField(
+            label="Tabella template Supabase",
+            value=settings.table_name,
+        )
+        auto_sync_templates = ft.Checkbox(
+            label="Sincronizza automaticamente i template all'avvio",
+            value=settings.auto_sync_templates_on_startup,
+        )
+        result_text = ft.Text("")
+
+        def current_settings() -> SupabaseSettings:
+            return SupabaseSettings(
+                project_url=supabase_url.value or "",
+                password=supabase_password.value or "",
+                table_name=supabase_table.value or "SaluteLavoro",
+                auto_sync_templates_on_startup=bool(auto_sync_templates.value),
+            )
+
+        def set_result(message: str) -> None:
+            result_text.value = message
+            self._update_control(result_text)
+
+        def save(_: object) -> None:
+            self._general_preferences_service.save_supabase_settings(
+                current_settings()
+            )
+            set_result("Impostazioni salvate")
+
+        def test(_: object) -> None:
+            result = self._general_preferences_service.test_supabase_connection(
+                current_settings()
+            )
+            set_result(result.message)
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Generali"),
+            content=ft.Container(
+                width=520,
+                content=ft.Column(
+                    controls=[
+                        ft.Text("Connessione Supabase", weight=ft.FontWeight.BOLD),
+                        supabase_url,
+                        supabase_password,
+                        supabase_table,
+                        auto_sync_templates,
+                        ft.Row(
+                            controls=[
+                                ft.OutlinedButton("Test", on_click=test),
+                                ft.FilledButton("Salva", on_click=save),
+                            ],
+                            wrap=True,
+                        ),
+                        result_text,
+                    ],
+                    tight=True,
+                    spacing=12,
+                ),
+            ),
+            actions=[ft.TextButton("Chiudi", on_click=lambda _: self._close_dialog())],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
+    def show_template_history(self, result_message: str = "") -> None:
+        ft = self._ft
+        self._close_dialog()
+        result_text = ft.Text(result_message)
+
+        def set_result(message: str) -> None:
+            result_text.value = message
+            self._update_control(result_text)
+
+        def refresh(_: object | None = None) -> None:
+            self.show_template_history()
+
+        def refresh_with_result(message: str) -> None:
+            self.show_template_history(message)
+
+        def sync_action(action: str) -> None:
+            if self._template_sync_service is None:
+                set_result("Sincronizzazione template non disponibile")
+                return
+            try:
+                if action == "download":
+                    result = self._template_sync_service.download_templates()
+                    refresh_with_result(
+                        f"Scaricati {result.downloaded}, invariati {result.skipped}"
+                    )
+                elif action == "upload":
+                    result = self._template_sync_service.upload_templates()
+                    set_result(f"Caricati {result.uploaded}")
+                else:
+                    result = self._template_sync_service.sync_templates()
+                    refresh_with_result(
+                        f"Caricati {result.uploaded}, "
+                        f"scaricati {result.downloaded}, invariati {result.skipped}"
+                    )
+            except SupabaseTemplateSyncServiceError as error:
+                set_result(str(error))
+
+        templates = self._local_learned_templates()
+        if templates:
+            content: object = ft.ListView(
+                controls=[
+                    ft.DataTable(
+                        columns=[
+                            ft.DataColumn(ft.Text("Template")),
+                            ft.DataColumn(ft.Text("Aggiornato il")),
+                        ],
+                        rows=[
+                            ft.DataRow(
+                                cells=[
+                                    ft.DataCell(ft.Text(path.name)),
+                                    ft.DataCell(
+                                        ft.Text(self._format_file_updated_at(path))
+                                    ),
+                                ]
+                            )
+                            for path in templates
+                        ],
+                        column_spacing=28,
+                    )
+                ],
+                spacing=0,
+            )
+        else:
+            content = ft.Text("Nessun template documento trovato")
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Template Documenti"),
+            content=ft.Container(
+                width=760,
+                height=460,
+                content=ft.Column(
+                    controls=[
+                        ft.Container(content=content, expand=True),
+                        ft.Row(
+                            controls=[
+                                ft.OutlinedButton("Aggiorna", on_click=refresh),
+                                ft.OutlinedButton(
+                                    "Scarica", on_click=lambda _: sync_action("download")
+                                ),
+                                ft.OutlinedButton(
+                                    "Carica", on_click=lambda _: sync_action("upload")
+                                ),
+                                ft.FilledButton(
+                                    "Sincronizza",
+                                    on_click=lambda _: sync_action("sync"),
+                                ),
+                            ],
+                            wrap=True,
+                        ),
+                        result_text,
+                    ],
+                    tight=True,
+                    spacing=10,
+                ),
+            ),
+            actions=[ft.TextButton("Chiudi", on_click=lambda _: self._close_dialog())],
         )
         self._active_dialog = dialog
         self._page.show_dialog(dialog)
@@ -816,15 +1229,86 @@ class MainView:
         self._page.show_dialog(dialog)
 
     def _open_queen_site(self, _: object | None = None) -> None:
+        self._open_url("https://queensrl.net")
+
+    def _open_url(self, url: str) -> None:
         if hasattr(self._page, "run_task"):
-            self._page.run_task(self._launch_queen_site)
+            self._page.run_task(self._launch_url, url)
             return
-        self._page.launch_url("https://queensrl.net")
+        self._page.launch_url(url)
 
     async def _launch_queen_site(self) -> None:
-        result = self._page.launch_url("https://queensrl.net")
+        await self._launch_url("https://queensrl.net")
+
+    async def _launch_url(self, url: str) -> None:
+        result = self._page.launch_url(url)
         if inspect.isawaitable(result):
             await result
+
+    def _app_version(self) -> str:
+        config_path = self._app_config_path
+        if not config_path.is_file() and not config_path.is_absolute():
+            config_path = Path(__file__).resolve().parent.parent / config_path
+        if not config_path.is_file():
+            return "00.000.000"
+        try:
+            for line in config_path.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key.strip() == "version":
+                    return value.strip().strip("'\"") or "00.000.000"
+        except OSError:
+            return "00.000.000"
+        return "00.000.000"
+
+    def _signed_history_documents(self) -> list[Path]:
+        if not self._signed_history_directory.is_dir():
+            return []
+        return sorted(
+            (
+                path
+                for path in self._signed_history_directory.iterdir()
+                if path.is_file() and path.suffix.lower() == ".pdf"
+            ),
+            key=lambda path: path.stat().st_ctime,
+            reverse=True,
+        )
+
+    def _local_learned_templates(self) -> list[Path]:
+        template_root = self._learned_template_directory
+        if not template_root.is_dir():
+            return []
+        return sorted(
+            (
+                path
+                for path in template_root.iterdir()
+                if path.is_file()
+                and path.name.startswith("learned_")
+                and path.suffix.lower() == ".json"
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+
+    def _open_signed_file(self, path: Path) -> None:
+        if hasattr(self._page, "run_task"):
+            self._page.run_task(self._launch_signed_file, path)
+            return
+        self._page.launch_url(path.resolve().as_uri())
+
+    async def _launch_signed_file(self, path: Path) -> None:
+        result = self._page.launch_url(path.resolve().as_uri())
+        if inspect.isawaitable(result):
+            await result
+
+    @staticmethod
+    def _format_file_created_at(path: Path) -> str:
+        created_at = datetime.fromtimestamp(path.stat().st_ctime)
+        return created_at.strftime("%d/%m/%Y %H:%M:%S")
+
+    @staticmethod
+    def _format_file_updated_at(path: Path) -> str:
+        updated_at = datetime.fromtimestamp(path.stat().st_mtime)
+        return updated_at.strftime("%d/%m/%Y %H:%M:%S")
 
     def _configure_window_icon(self) -> None:
         if sys.platform != "win32":
@@ -911,6 +1395,7 @@ class MainView:
                     user32, ctypes, wintypes, title
                 )
                 for hwnd in hwnds:
+                    MainView._apply_windows_title_bar_colors(ctypes, wintypes, hwnd)
                     if big_icon:
                         user32.SendMessageW(hwnd, wm_seticon, icon_big, big_icon)
                         set_class_long(hwnd, gclp_hicon, big_icon)
@@ -920,6 +1405,52 @@ class MainView:
                 time.sleep(0.25)
         except Exception:
             return
+
+    @staticmethod
+    def _apply_windows_title_bar_colors(
+        ctypes_module: object, wintypes_module: object, hwnd: int
+    ) -> None:
+        try:
+            dwmapi = ctypes_module.windll.dwmapi
+            dwmapi.DwmSetWindowAttribute.argtypes = [
+                wintypes_module.HWND,
+                ctypes_module.c_uint,
+                ctypes_module.c_void_p,
+                ctypes_module.c_uint,
+            ]
+            dwmapi.DwmSetWindowAttribute.restype = ctypes_module.c_long
+            caption_color = wintypes_module.DWORD(
+                MainView._windows_colorref_from_hex("1f3c98")
+            )
+            text_color = wintypes_module.DWORD(
+                MainView._windows_colorref_from_hex("ffffff")
+            )
+            dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                35,
+                ctypes_module.cast(
+                    ctypes_module.byref(caption_color), ctypes_module.c_void_p
+                ),
+                ctypes_module.sizeof(caption_color),
+            )
+            dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                36,
+                ctypes_module.cast(
+                    ctypes_module.byref(text_color), ctypes_module.c_void_p
+                ),
+                ctypes_module.sizeof(text_color),
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _windows_colorref_from_hex(value: str) -> int:
+        normalized = value.strip().lstrip("#")
+        red = int(normalized[0:2], 16)
+        green = int(normalized[2:4], 16)
+        blue = int(normalized[4:6], 16)
+        return red | (green << 8) | (blue << 16)
 
     @staticmethod
     def _find_windows_windows_by_title(
