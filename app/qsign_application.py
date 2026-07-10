@@ -1,5 +1,6 @@
 """Composition root for the current desktop shell."""
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from app.pdf_viewer_controller import PDFViewerController
@@ -22,6 +23,7 @@ from services.templates.supabase_template_sync_service import (
     SupabaseTemplateSyncService,
     SupabaseTemplateSyncServiceError,
 )
+from services.wacom.providers.stu430_provider import STU430Provider
 
 if TYPE_CHECKING:
     import flet as ft
@@ -35,6 +37,13 @@ class QSignApplication:
 
     def main(self, page: "ft.Page") -> None:
         """Configure the QSign desktop window."""
+        try:
+            self._main(page)
+        except Exception:
+            self._logger.exception("QSign desktop shell failed during startup")
+            raise
+
+    def _main(self, page: "ft.Page") -> None:
         from ui.main_view import MainView
 
         self._logger.info("Starting QSign desktop shell")
@@ -49,6 +58,7 @@ class QSignApplication:
             template_root="templates",
             logger=self._logger,
         )
+        self._logger.info("QSign services initialized")
         digital_signature_writer = PyHankoDigitalSignatureWriter(
             certificate_service=certificate_service,
             logger=self._logger,
@@ -79,6 +89,7 @@ class QSignApplication:
             anchor_detector=anchor_detector,
             template_repository=template_repository,
             general_preferences_service=general_preferences_service,
+            signature_provider=self._create_signature_provider(),
         )
         view.bind_actions(
             on_open_document=controller.open_document,
@@ -91,16 +102,75 @@ class QSignApplication:
             on_manual_signature_rect=controller.set_manual_signature_rectangle,
             on_signature_area_click=controller.open_signature_dialog,
         )
+        self._logger.info("QSign view initialized")
         view.prepare_window_shell()
-        self._set_window_visible(page, False)
         self._sync_templates_on_startup(
             general_preferences_service,
             template_sync_service,
         )
+        self._logger.info("QSign building view")
         view.build()
         view.show_startup_user_confirmation()
-        self._set_window_visible(page, True)
-        page.on_close = lambda _: controller.shutdown()
+        self._logger.info("QSign desktop shell ready")
+        self._bind_shutdown(page, controller)
+
+    def _create_signature_provider(self) -> STU430Provider | None:
+        try:
+            return STU430Provider()
+        except Exception as error:
+            self._logger.warning("Wacom STU provider unavailable", error=str(error))
+            return None
+
+    def _bind_shutdown(self, page: "ft.Page", controller: PDFViewerController) -> None:
+        def shutdown(_: object | None = None) -> None:
+            self._logger.info("QSign shutdown requested")
+            controller.shutdown()
+
+        page.on_close = shutdown
+        window = getattr(page, "window", None)
+        if window is None:
+            return
+        if hasattr(window, "prevent_close"):
+            window.prevent_close = True
+        if hasattr(window, "on_event"):
+            window.on_event = lambda event: self._handle_window_event(
+                event,
+                page,
+                shutdown,
+            )
+        update = getattr(page, "update", None)
+        if callable(update):
+            update()
+
+    def _handle_window_event(
+        self,
+        event: object,
+        page: "ft.Page",
+        shutdown: Callable[[object | None], None],
+    ) -> None:
+        event_type = getattr(event, "type", "")
+        event_value = getattr(event_type, "value", event_type)
+        if event_value != "close":
+            return
+        shutdown(event)
+        window = getattr(page, "window", None)
+        destroy = getattr(window, "destroy", None)
+        if not callable(destroy):
+            return
+        run_task = getattr(page, "run_task", None)
+        if callable(run_task):
+            async def destroy_safely() -> None:
+                try:
+                    await destroy()
+                except RuntimeError as error:
+                    if str(error) == "Session closed":
+                        self._logger.warning("Window destroy skipped: session closed")
+                        return
+                    raise
+
+            run_task(destroy_safely)
+            return
+        self._logger.warning("Window destroy requested but page cannot run tasks")
 
     @staticmethod
     def _set_window_visible(page: "ft.Page", visible: bool) -> None:

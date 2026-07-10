@@ -1,0 +1,154 @@
+{
+  "schema_version": "1.0",
+  "template_id": "learned_trattamento_personali_data___________informa_amento_sensibili_documento_sensi",
+  "code": "LEARNED_TRATTAMENTO_PERSONALI_DATA___________INFORMA_AMENTO_SENSIBILI_DOCUMENTO_SENSI",
+  "name": "Template provvisorio learned_trattamento_personali_data___________informa_amento_sensibili_documento_sensi",
+  "description": "Template creato dal primo flusso manuale QSign.",
+  "document_type": "manual_signature_flow",
+  "version": "0.1.0",
+  "state": "draft",
+  "priority": 5,
+  "document_rules": [],
+  "recognition_rules": [
+    {
+      "rule_id": "manual-filename-stem",
+      "rule_type": "literal",
+      "expression": "851011_sn7aopkbcc",
+      "scope": "document",
+      "required": false,
+      "weight": 0.25
+    },
+    {
+      "rule_id": "manual-recognition-phrase",
+      "rule_type": "literal",
+      "expression": "Salute e Lavoro Società Coopera va Ambulatori Via Meucci, 18 - 47122 Forlì (FC) Tel. 0543 798337 Via G. Per cari, 2/A - 47035 Salute e Lavoro Società Coopera va",
+      "scope": "document",
+      "required": false,
+      "weight": 6.0
+    },
+    {
+      "rule_id": "manual-structural-signature",
+      "rule_type": "literal",
+      "expression": "trattamento personali data__________ informa amento sensibili documento sensi regolamento titolare avente it03455980403 osservanza quanto previsto siamo",
+      "scope": "document",
+      "required": true,
+      "weight": 10.0
+    },
+    {
+      "rule_id": "manual-visual-signature",
+      "rule_type": "visual_hash",
+      "expression": "000000003ffffffc3f847c443834fc7c3ffffffc0ffffff000003fc000003f8000003f001fc316301ffffff81ff8000007e4000007fffb581fe000001ffffff81ffffff81fffff781ffb80000ffffff807d7f00007ffff681ffe00001ffffff80ef7ce9007fe8d201fff57101af685f01fffec60066000000000000000000000",
+      "scope": "document",
+      "required": true,
+      "weight": 30.0
+    },
+    {
+      "rule_id": "manual-keyword-1",
+      "rule_type": "literal",
+      "expression": "trattamento",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-2",
+      "rule_type": "literal",
+      "expression": "personali",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-3",
+      "rule_type": "literal",
+      "expression": "data__________",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-4",
+      "rule_type": "literal",
+      "expression": "informa",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-5",
+      "rule_type": "literal",
+      "expression": "amento",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-6",
+      "rule_type": "literal",
+      "expression": "sensibili",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-7",
+      "rule_type": "literal",
+      "expression": "documento",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    },
+    {
+      "rule_id": "manual-keyword-8",
+      "rule_type": "literal",
+      "expression": "sensi",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
+    }
+  ],
+  "anchor_rules": [
+    {
+      "anchor_id": "manual-learned-anchor",
+      "name": "Anchor appreso manualmente",
+      "search_type": "text",
+      "expression": "In fede L’interessato",
+      "scope": "document",
+      "occurrence_policy": "first",
+      "required": false
+    }
+  ],
+  "placement_rules": [
+    {
+      "placement_id": "relative-signature",
+      "role": "signer",
+      "anchor_id": "manual-learned-anchor",
+      "side": "relative",
+      "alignment": "manual",
+      "x_offset": -83.93984985351562,
+      "y_offset": -6.4285888671875,
+      "width": 238.0,
+      "height": 106.0,
+      "page_index": null,
+      "required": true
+    },
+    {
+      "placement_id": "manual-signature",
+      "role": "signer",
+      "anchor_id": "manual",
+      "side": "manual",
+      "alignment": "manual",
+      "x_offset": 316.5,
+      "y_offset": 441.0,
+      "width": 238.0,
+      "height": 106.0,
+      "page_index": 1,
+      "required": true
+    }
+  ],
+  "settings": {
+    "recognition_threshold": 80,
+    "ambiguity_margin": 5,
+    "normalization_profile": "default"
+  }
+}

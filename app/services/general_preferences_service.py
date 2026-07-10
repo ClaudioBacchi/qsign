@@ -29,6 +29,7 @@ class SupabaseSettings:
     auto_sync_templates_on_startup: bool = False
     auto_save_signed_documents: bool = False
     show_signature_text: bool = False
+    signature_capture_mode: str = "mouse"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +77,7 @@ class GeneralPreferencesService:
     _SUPABASE_AUTO_SYNC_KEY = "supabase_auto_sync_templates_on_startup"
     _AUTO_SAVE_SIGNED_DOCUMENTS_KEY = "auto_save_signed_documents"
     _SHOW_SIGNATURE_TEXT_KEY = "show_signature_text"
+    _SIGNATURE_CAPTURE_MODE_KEY = "signature_capture_mode"
     _ERP_USERS_URL_KEY = "erp_users_url"
     _ERP_BASIC_USERNAME_KEY = "erp_basic_username"
     _ERP_BASIC_PASSWORD_KEY = "erp_basic_password"
@@ -114,6 +116,9 @@ class GeneralPreferencesService:
                 general.get(self._AUTO_SAVE_SIGNED_DOCUMENTS_KEY)
             ),
             show_signature_text=bool(general.get(self._SHOW_SIGNATURE_TEXT_KEY)),
+            signature_capture_mode=_normalized_signature_capture_mode(
+                general.get(self._SIGNATURE_CAPTURE_MODE_KEY)
+            ),
         )
 
     def save_supabase_settings(self, settings: SupabaseSettings) -> None:
@@ -134,6 +139,9 @@ class GeneralPreferencesService:
             settings.auto_save_signed_documents
         )
         general[self._SHOW_SIGNATURE_TEXT_KEY] = settings.show_signature_text
+        general[self._SIGNATURE_CAPTURE_MODE_KEY] = (
+            _normalized_signature_capture_mode(settings.signature_capture_mode)
+        )
         payload[self._PREFERENCES_KEY] = general
         self._write_preferences(payload)
         self._log_general_settings_saved(previous_settings, settings)
@@ -471,6 +479,9 @@ class GeneralPreferencesService:
             auto_sync_templates_on_startup=settings.auto_sync_templates_on_startup,
             auto_save_signed_documents=settings.auto_save_signed_documents,
             show_signature_text=settings.show_signature_text,
+            signature_capture_mode=_normalized_signature_capture_mode(
+                settings.signature_capture_mode
+            ),
             changed_fields=sorted(
                 _changed_general_settings_fields(previous_settings, settings)
             ),
@@ -538,6 +549,9 @@ class GeneralPreferencesService:
         value = payload.get(key)
         if not isinstance(value, dict):
             return ""
+        if value.get("protected_with") == "plain-internal-test":
+            plain_value = value.get("value")
+            return plain_value if isinstance(plain_value, str) else ""
         if value.get("protected_with") != "windows-dpapi-current-user":
             return ""
         encrypted = value.get("value")
@@ -692,7 +706,19 @@ def _changed_general_settings_fields(
         changed_fields.add("auto_save_signed_documents")
     if previous_settings.show_signature_text != settings.show_signature_text:
         changed_fields.add("show_signature_text")
+    if (
+        _normalized_signature_capture_mode(previous_settings.signature_capture_mode)
+        != _normalized_signature_capture_mode(settings.signature_capture_mode)
+    ):
+        changed_fields.add("signature_capture_mode")
     return changed_fields
+
+
+def _normalized_signature_capture_mode(value: object) -> str:
+    mode = str(value or "mouse").strip().casefold()
+    if mode == "wacom":
+        return "wacom"
+    return "mouse"
 
 
 def _parse_erp_users(payload: object) -> list[ErpUser]:

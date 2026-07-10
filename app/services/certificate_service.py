@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -420,6 +421,13 @@ if ($null -eq $selected) {
 
     @staticmethod
     def _run_powershell(script: str) -> str:
+        startupinfo = None
+        creationflags = 0
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            creationflags = subprocess.CREATE_NO_WINDOW
         completed = subprocess.run(
             [
                 "powershell",
@@ -432,6 +440,8 @@ if ($null -eq $selected) {
             capture_output=True,
             text=True,
             check=False,
+            startupinfo=startupinfo,
+            creationflags=creationflags,
         )
         if completed.returncode != 0:
             message = completed.stderr.strip() or completed.stdout.strip()

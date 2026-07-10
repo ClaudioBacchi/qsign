@@ -2,9 +2,10 @@
 
 import json
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from app.services.general_preferences_service import GeneralPreferencesService
 from models.document import Document, Rectangle
@@ -21,6 +22,7 @@ from services.pdf.pdf_provider import PdfProvider
 from services.pdf.pdf_signature import SignatureArea
 from services.signature.signature_service import CapturedSignature
 from services.templates.template_repository import TemplateRepository
+from services.wacom.wacom_service import WacomProvider
 
 
 _DEMO_ANCHOR_RULES: tuple[tuple[str, ...], ...] = (
@@ -98,6 +100,12 @@ class PDFViewerView(Protocol):
 
     def show_status(self, message: str) -> None: ...
 
+    def defer_signature_capture(self, callback: Callable[[], None]) -> None: ...
+
+    def run_background_task(self, callback: Callable[[], None]) -> None: ...
+
+    def run_ui_task(self, callback: Callable[[], None]) -> None: ...
+
 
 @dataclass(slots=True)
 class PDFViewerState:
@@ -164,6 +172,7 @@ class PDFViewerController:
         anchor_detector: AnchorDetector | None = None,
         template_repository: TemplateRepository | None = None,
         general_preferences_service: GeneralPreferencesService | None = None,
+        signature_provider: WacomProvider | None = None,
         template_root: str | Path = "templates",
     ) -> None:
         self._pdf_service = pdf_service
@@ -173,6 +182,7 @@ class PDFViewerController:
         self._anchor_detector = anchor_detector
         self._template_repository = template_repository
         self._general_preferences_service = general_preferences_service
+        self._signature_provider = signature_provider
         self._template_root = Path(template_root)
         self._canonical_document: Document | None = None
         self._anchor_matches: tuple[AnchorMatch, ...] = ()
@@ -183,6 +193,8 @@ class PDFViewerController:
         self._recognized_template: Template | None = None
         self._pending_manual_rectangle_restore: SignatureRectangleSnapshot | None = None
         self._workflow_status = "Apri un PDF"
+        self._wacom_capture_cancel: threading.Event | None = None
+        self._wacom_capture_generation = 0
         self.state = PDFViewerState()
 
     def open_document(self, path: str) -> None:
@@ -192,6 +204,7 @@ class PDFViewerController:
             self._analyze_document(Path(path))
             self._focus_signature_page_if_available()
             self._render_current_page()
+            self._open_wacom_signature_when_ready()
         except Exception as error:
             self._logger.exception("Unable to open PDF", path=path)
             self.state = PDFViewerState()
@@ -208,6 +221,7 @@ class PDFViewerController:
             self._view.show_error(str(error))
 
     def close_document(self) -> None:
+        self._cancel_wacom_capture()
         try:
             if self._pdf_service.current_document is not None:
                 self._pdf_service.close_document()
@@ -227,6 +241,7 @@ class PDFViewerController:
 
     def shutdown(self) -> None:
         """Release document resources without updating a closing window."""
+        self._cancel_wacom_capture()
         if self._pdf_service.current_document is not None:
             self._pdf_service.close_document()
         self.state = PDFViewerState()
@@ -417,6 +432,8 @@ class PDFViewerController:
             self._view.show_error("Rettangolo firma troppo piccolo")
             return
 
+        self._cancel_wacom_capture()
+        self._captured_signature = None
         page_size = document.page_sizes[self.state.page_index]
         scale_x = page_size.width / image_width
         scale_y = page_size.height / image_height
@@ -458,12 +475,71 @@ class PDFViewerController:
         if self._signature_rectangle is None:
             self._view.show_error("Nessun rettangolo firma disponibile")
             return
+        if self._wacom_signature_selected():
+            self._capture_wacom_signature()
+            return
         self._logger.info("Opening mouse signature dialog")
         self._view.open_signature_dialog(
             self.apply_mouse_signature,
             self.log_mouse_signature_clear,
             self.log_mouse_signature_cancel,
         )
+
+    def _open_wacom_signature_when_ready(self) -> None:
+        if not self._wacom_signature_selected():
+            return
+        if self._signature_rectangle is None:
+            return
+        self._view.defer_signature_capture(self._capture_wacom_signature)
+
+    def _capture_wacom_signature(self) -> None:
+        if self._signature_provider is None:
+            self._view.show_error("Firma Wacom non disponibile")
+            return
+        self._wacom_capture_generation += 1
+        generation = self._wacom_capture_generation
+        cancel_event = threading.Event()
+        self._wacom_capture_cancel = cancel_event
+        self._view.show_status("firma Wacom: firma sulla tavoletta")
+
+        def capture() -> None:
+            try:
+                signature = self._signature_provider.capture_signature()
+            except Exception as error:
+                if cancel_event.is_set() or generation != self._wacom_capture_generation:
+                    self._logger.info("Wacom signature capture cancelled")
+                    return
+                error_message = str(error)
+                self._logger.warning(
+                    "Wacom signature capture unavailable",
+                    error=error_message,
+                )
+                self._view.run_ui_task(
+                    lambda: self._view.show_error(
+                        f"Firma Wacom non disponibile: {error_message}"
+                    )
+                )
+                return
+            if cancel_event.is_set() or generation != self._wacom_capture_generation:
+                self._logger.info("Ignoring cancelled Wacom signature capture")
+                return
+            self._view.run_ui_task(lambda: self.apply_mouse_signature(signature))
+
+        self._view.run_background_task(capture)
+
+    def _cancel_wacom_capture(self) -> None:
+        self._wacom_capture_generation += 1
+        if self._wacom_capture_cancel is not None:
+            self._wacom_capture_cancel.set()
+        cancel = getattr(self._signature_provider, "cancel_signature_capture", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception as error:
+                self._logger.warning(
+                    "Unable to cancel Wacom signature capture",
+                    error=str(error),
+                )
 
     def log_mouse_signature_clear(self) -> None:
         self._logger.info("Mouse signature cleared")
@@ -537,6 +613,15 @@ class PDFViewerController:
             .auto_save_signed_documents
         )
 
+    def _wacom_signature_selected(self) -> bool:
+        if self._general_preferences_service is None:
+            return False
+        return (
+            self._general_preferences_service.get_supabase_settings()
+            .signature_capture_mode
+            == "wacom"
+        )
+
     def save_manual_template(self) -> None:
         if self._canonical_document is None or self._signature_rectangle is None:
             self._view.show_error("Nessun modello manuale da salvare")
@@ -578,12 +663,14 @@ class PDFViewerController:
         self._pending_manual_rectangle_restore = None
         self._logger.info("Manual template saved", path=str(template_path))
         self._render_current_page()
+        self._open_wacom_signature_when_ready()
 
     def cancel_manual_template_change(self) -> None:
         snapshot = self._pending_manual_rectangle_restore
         self._pending_manual_rectangle_restore = None
         if snapshot is None or snapshot.rectangle is None:
             self._view.show_status("modello non salvato")
+            self._open_wacom_signature_when_ready()
             return
 
         self._signature_rectangle = snapshot.rectangle

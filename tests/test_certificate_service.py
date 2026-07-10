@@ -1,9 +1,12 @@
 """Tests for the first Windows certificate preference milestone."""
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.services.certificate_service import (
     DEFAULT_SIGNATURE_REASON,
@@ -314,6 +317,30 @@ class CertificateServiceTests(unittest.TestCase):
             self.assertIn("$validUntil = '2031-05-20'", scripts[0])
             payload = json.loads(preferences.read_text(encoding="utf-8"))
             self.assertEqual(payload["active_certificate_thumbprint"], "1122")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows-specific subprocess flags")
+    def test_run_powershell_hides_console_window_on_windows(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["powershell"],
+            returncode=0,
+            stdout="ok",
+            stderr="",
+        )
+        with patch("app.services.certificate_service.subprocess.run") as run:
+            run.return_value = completed
+
+            output = CertificateService._run_powershell("Write-Output ok")
+
+        self.assertEqual(output, "ok")
+        self.assertEqual(run.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
+        self.assertIsInstance(
+            run.call_args.kwargs["startupinfo"],
+            subprocess.STARTUPINFO,
+        )
+        self.assertEqual(
+            run.call_args.kwargs["startupinfo"].wShowWindow,
+            subprocess.SW_HIDE,
+        )
 
     def test_generate_self_signed_rejects_invalid_expiration(self) -> None:
         service = CertificateService(command_runner=lambda _: "{}")

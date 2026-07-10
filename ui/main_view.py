@@ -1,5 +1,6 @@
 """Minimal Flet shell for Milestone 1."""
 
+import asyncio
 import base64
 import inspect
 import locale
@@ -33,6 +34,12 @@ if TYPE_CHECKING:
     import flet as ft
 
 
+def _checked(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 class AnchorOverlayViewModel(Protocol):
     """Presentation-only rectangle projected onto the rendered page."""
 
@@ -49,6 +56,7 @@ class MainView:
     """Build controls and expose presentation-only updates."""
 
     APP_TITLE = "QSign by Queen Srl - queensrl.net"
+    _MOUSE_WHEEL_PAGE_THRESHOLD = 40.0
 
     def __init__(
         self,
@@ -86,6 +94,7 @@ class MainView:
         self._manual_signature_mode = False
         self._manual_drag_start: tuple[float, float] | None = None
         self._manual_draft_rect: tuple[float, float, float, float] | None = None
+        self._mouse_wheel_page_delta = 0.0
         self._active_dialog: object | None = None
         self._admin_mode = False
         self._security_button: object | None = None
@@ -120,7 +129,7 @@ class MainView:
         self._viewer_placeholder = ft.GestureDetector(
             content=ft.Container(
                 content=ft.Image(
-                    src="images/logo_qsign_grande.png",
+                    src=self._image_data_uri("images/logo_qsign_grande.png"),
                     width=680,
                     fit=ft.BoxFit.CONTAIN,
                     semantics_label="QSign",
@@ -160,6 +169,7 @@ class MainView:
             on_pan_start=self._start_manual_signature_drag,
             on_pan_update=self._update_manual_signature_drag,
             on_pan_end=self._finish_manual_signature_drag,
+            on_scroll=self._handle_pdf_mouse_wheel,
         )
         self._horizontal_viewer = ft.Row(
             controls=[self._signature_surface],
@@ -431,6 +441,7 @@ class MainView:
             *self._build_anchor_overlay_controls(anchor_overlays),
             self._manual_draft_overlay,
         ]
+        self._mouse_wheel_page_delta = 0.0
         self._viewer_placeholder.visible = False
         self._home_view.visible = False
         self._document_viewer.visible = True
@@ -446,6 +457,30 @@ class MainView:
     def show_status(self, message: str) -> None:
         self._document_status.value = f"Stato: {message}"
         self._page.update()
+
+    def defer_signature_capture(self, callback: Callable[[], None]) -> None:
+        async def delayed_capture() -> None:
+            await asyncio.sleep(0.5)
+            callback()
+
+        run_task = getattr(self._page, "run_task", None)
+        if callable(run_task):
+            run_task(delayed_capture)
+            return
+        callback()
+
+    def run_background_task(self, callback: Callable[[], None]) -> None:
+        threading.Thread(target=callback, daemon=True).start()
+
+    def run_ui_task(self, callback: Callable[[], None]) -> None:
+        async def invoke() -> None:
+            callback()
+
+        run_task = getattr(self._page, "run_task", None)
+        if callable(run_task):
+            run_task(invoke)
+            return
+        callback()
 
     def show_certificate_status(self) -> None:
         self._document_status.value = self._certificate_status_text()
@@ -652,6 +687,7 @@ class MainView:
         self._manual_draft_overlay.visible = False
         self._manual_draft_rect = None
         self._manual_drag_start = None
+        self._mouse_wheel_page_delta = 0.0
         self._home_view.visible = True
         self._viewer_placeholder.visible = True
         self._document_viewer.visible = False
@@ -773,7 +809,9 @@ class MainView:
                     controls=[
                         ft.Container(
                             content=ft.Image(
-                                src="images/logo_qsign_grande.png",
+                                src=self._image_data_uri(
+                                    "images/logo_qsign_grande.png"
+                                ),
                                 width=420,
                                 height=150,
                                 fit=ft.BoxFit.CONTAIN,
@@ -819,7 +857,9 @@ class MainView:
                                     size=12,
                                 ),
                                 ft.Image(
-                                    src="images/logo_queen_25anni.png",
+                                    src=self._image_data_uri(
+                                        "images/logo_queen_25anni.png"
+                                    ),
                                     width=170,
                                     height=55,
                                     fit=ft.BoxFit.CONTAIN,
@@ -1009,6 +1049,20 @@ class MainView:
             label="Salvataggio Automatico",
             value=settings.auto_save_signed_documents,
         )
+        signature_capture_mode = ft.RadioGroup(
+            value=(
+                "wacom"
+                if settings.signature_capture_mode == "wacom"
+                else "mouse"
+            ),
+            content=ft.Row(
+                controls=[
+                    ft.Radio(value="mouse", label="Mouse"),
+                    ft.Radio(value="wacom", label="Wacom STU-430"),
+                ],
+                wrap=True,
+            ),
+        )
         show_signature_text = ft.Checkbox(
             label="Mostra testo nel riquadro firma",
             value=settings.show_signature_text,
@@ -1020,11 +1074,16 @@ class MainView:
                 project_url=supabase_url.value or "",
                 password=supabase_password.value or "",
                 table_name=supabase_table.value or "SaluteLavoro",
-                auto_sync_templates_on_startup=bool(auto_sync_templates.value),
-                auto_save_signed_documents=bool(
+                auto_sync_templates_on_startup=_checked(auto_sync_templates.value),
+                auto_save_signed_documents=_checked(
                     auto_save_signed_documents.value
                 ),
-                show_signature_text=bool(show_signature_text.value),
+                show_signature_text=_checked(show_signature_text.value),
+                signature_capture_mode=(
+                    "wacom"
+                    if signature_capture_mode.value == "wacom"
+                    else "mouse"
+                ),
             )
 
         def set_result(message: str) -> None:
@@ -1086,6 +1145,8 @@ class MainView:
                         ),
                         auto_sync_templates,
                         auto_save_signed_documents,
+                        ft.Text("Metodo firma", weight=ft.FontWeight.BOLD),
+                        signature_capture_mode,
                         *([show_signature_text] if self._admin_mode else []),
                         ft.Row(
                             controls=[
@@ -1932,7 +1993,7 @@ class MainView:
     def _app_version(self) -> str:
         config_path = self._app_config_path
         if not config_path.is_file() and not config_path.is_absolute():
-            config_path = Path(__file__).resolve().parent.parent / config_path
+            config_path = self._application_root() / config_path
         if not config_path.is_file():
             return "00.000.000"
         try:
@@ -1999,12 +2060,7 @@ class MainView:
             return
         if self._window_icon_configured:
             return
-        icon_path = (
-            Path(__file__).resolve().parent.parent
-            / "resources"
-            / "icons"
-            / "favicon.ico"
-        )
+        icon_path = self._resource_path("icons/favicon.ico")
         if not icon_path.is_file():
             return
         self._window_icon_configured = True
@@ -2013,6 +2069,26 @@ class MainView:
             args=(str(icon_path), self._page.title),
             daemon=True,
         ).start()
+
+    @classmethod
+    def _application_root(cls) -> Path:
+        bundle_root = getattr(sys, "_MEIPASS", None)
+        if bundle_root:
+            return Path(bundle_root)
+        return Path(__file__).resolve().parent.parent
+
+    @classmethod
+    def _resource_path(cls, relative_path: str) -> Path:
+        return cls._application_root() / "resources" / relative_path
+
+    @classmethod
+    def _image_data_uri(cls, relative_path: str) -> str:
+        image_path = cls._resource_path(relative_path)
+        try:
+            encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        except OSError:
+            return ""
+        return f"data:image/png;base64,{encoded}"
 
     @staticmethod
     def _apply_windows_window_icon(icon_path: str, title: str | None) -> None:
@@ -2215,6 +2291,46 @@ class MainView:
             if len(points) > 1:
                 strokes.append(points)
         return strokes
+
+    def _handle_pdf_mouse_wheel(self, event: object) -> None:
+        if not self._document_viewer.visible or not self._pdf_stack.visible:
+            self._mouse_wheel_page_delta = 0.0
+            return
+
+        delta_y = self._scroll_delta_y(event)
+        if delta_y == 0:
+            return
+
+        self._mouse_wheel_page_delta += delta_y
+        if abs(self._mouse_wheel_page_delta) < self._MOUSE_WHEEL_PAGE_THRESHOLD:
+            return
+
+        if self._mouse_wheel_page_delta > 0:
+            self._invoke(self._on_next)
+        else:
+            self._invoke(self._on_previous)
+        self._mouse_wheel_page_delta = 0.0
+
+    @staticmethod
+    def _scroll_delta_y(event: object) -> float:
+        scroll_delta = getattr(event, "scroll_delta", None)
+        if scroll_delta is not None:
+            value = getattr(scroll_delta, "y", None)
+            if value is not None:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return 0.0
+
+        for name in ("scroll_delta_y", "delta_y", "dy"):
+            value = getattr(event, name, None)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
 
     def _start_manual_signature_drag(self, event: object) -> None:
         if not self._manual_signature_mode:

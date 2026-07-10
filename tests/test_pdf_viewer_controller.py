@@ -37,6 +37,8 @@ class FakeViewer:
         self.manual_mode = False
         self.save_callback = None
         self.cancel_save_callback = None
+        self.open_signature_dialog_called = False
+        self.defer_signature_capture_count = 0
 
     def display_document(
         self,
@@ -80,12 +82,91 @@ class FakeViewer:
         self.cancel_save_callback = on_cancel
 
     def open_signature_dialog(self, on_confirm, on_clear, on_cancel) -> None:
+        self.open_signature_dialog_called = True
         on_confirm(
             CapturedSignature(
                 content=b"<svg><polyline points='1,1 2,2'/></svg>",
                 media_type="image/svg+xml",
             )
         )
+
+    def defer_signature_capture(self, callback) -> None:
+        self.defer_signature_capture_count += 1
+        callback()
+
+    def run_background_task(self, callback) -> None:
+        callback()
+
+    def run_ui_task(self, callback) -> None:
+        callback()
+
+
+class DeferredBackgroundViewer(FakeViewer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.background_tasks = []
+        self.ui_tasks = []
+
+    def run_background_task(self, callback) -> None:
+        self.background_tasks.append(callback)
+
+    def run_ui_task(self, callback) -> None:
+        self.ui_tasks.append(callback)
+
+
+class FakeSignatureProvider:
+    def __init__(
+        self,
+        signature: CapturedSignature,
+        on_capture=None,
+    ) -> None:
+        self.signature = signature
+        self.capture_count = 0
+        self.on_capture = on_capture
+
+    def connect(self) -> None:
+        return None
+
+    def disconnect(self) -> None:
+        return None
+
+    def capture_signature(self) -> CapturedSignature:
+        self.capture_count += 1
+        if self.on_capture is not None:
+            self.on_capture()
+        return self.signature
+
+
+class CancellableSignatureProvider(FakeSignatureProvider):
+    def __init__(self, signature: CapturedSignature) -> None:
+        super().__init__(signature)
+        self.cancel_count = 0
+        self.cancelled = False
+
+    def cancel_signature_capture(self) -> None:
+        self.cancel_count += 1
+        self.cancelled = True
+
+    def capture_signature(self) -> CapturedSignature:
+        self.capture_count += 1
+        if self.cancelled:
+            raise RuntimeError("Firma annullata")
+        return self.signature
+
+
+class FailingSignatureProvider:
+    def __init__(self) -> None:
+        self.capture_count = 0
+
+    def connect(self) -> None:
+        return None
+
+    def disconnect(self) -> None:
+        return None
+
+    def capture_signature(self) -> CapturedSignature:
+        self.capture_count += 1
+        raise RuntimeError("tablet unavailable")
 
 
 class PDFViewerControllerTests(unittest.TestCase):
@@ -380,6 +461,7 @@ class PDFViewerControllerTests(unittest.TestCase):
             ),
             template_repository=FakeLegacyHeaderOnlyTemplateRepository(),
         )
+        self.view.open_signature_dialog_called = False
 
         self.controller.open_document("different.pdf")
 
@@ -596,7 +678,350 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.controller.save_signed_pdf()
 
         self.assertEqual(self.view.errors[-1], "Nessuna firma acquisita")
+
+    def test_open_signature_dialog_uses_wacom_provider_when_available(self) -> None:
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='3,3 4,4'/></svg>",
+            media_type="image/svg+xml",
+        )
+        provider = FakeSignatureProvider(signature)
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.wacom"),
+            general_preferences_service=FakeGeneralPreferencesService(
+                signature_capture_mode="wacom"
+            ),
+            signature_provider=provider,
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(10, 10, 50, 30, 200, 200)
+        self.view.save_callback()
+
+        controller.open_signature_dialog()
+
+        self.assertFalse(self.view.open_signature_dialog_called)
+        self.assertEqual(provider.capture_count, 1)
+        saved_overlay = self.view.pages[-1][4][0]
+        self.assertEqual(saved_overlay.signature_content, signature.content)
+
+    def test_open_signature_dialog_reports_wacom_error_without_mouse_fallback(self) -> None:
+        provider = FailingSignatureProvider()
+        view = DeferredBackgroundViewer()
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create("qsign.tests.controller.wacom_fallback"),
+            general_preferences_service=FakeGeneralPreferencesService(
+                signature_capture_mode="wacom"
+            ),
+            signature_provider=provider,
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(10, 10, 50, 30, 200, 200)
+
+        controller.open_signature_dialog()
+        view.background_tasks[0]()
+
+        self.assertFalse(view.open_signature_dialog_called)
+        self.assertEqual(provider.capture_count, 1)
+        self.assertEqual(view.errors, [])
+        view.ui_tasks[0]()
+        self.assertEqual(
+            view.errors[-1],
+            "Firma Wacom non disponibile: tablet unavailable",
+        )
+        saved_overlay = view.pages[-1][4][0]
+        self.assertIsNone(saved_overlay.signature_content)
         self.service.save_signed_preview.assert_not_called()
+
+    def test_open_signature_dialog_reports_missing_wacom_provider_without_mouse_fallback(self) -> None:
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.wacom_missing"),
+            general_preferences_service=FakeGeneralPreferencesService(
+                signature_capture_mode="wacom"
+            ),
+            signature_provider=None,
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(10, 10, 50, 30, 200, 200)
+        self.view.save_callback()
+
+        controller.open_signature_dialog()
+
+        self.assertFalse(self.view.open_signature_dialog_called)
+        self.assertEqual(self.view.errors[-1], "Firma Wacom non disponibile")
+        saved_overlay = self.view.pages[-1][4][0]
+        self.assertIsNone(saved_overlay.signature_content)
+
+    def test_open_document_starts_wacom_when_signature_box_is_ready(self) -> None:
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='3,3 4,4'/></svg>",
+            media_type="image/svg+xml",
+        )
+        provider = FakeSignatureProvider(signature)
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.wacom_auto"),
+            pdf_provider=FakePDFProviderWithoutAnchors(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create("qsign.tests.controller.wacom_auto_detector")
+            ),
+            template_repository=FakeTemplateRepository(),
+            general_preferences_service=FakeGeneralPreferencesService(
+                signature_capture_mode="wacom"
+            ),
+            signature_provider=provider,
+        )
+
+        controller.open_document("sample.pdf")
+
+        self.assertEqual(self.view.defer_signature_capture_count, 1)
+        self.assertEqual(provider.capture_count, 1)
+        self.assertFalse(self.view.open_signature_dialog_called)
+        saved_overlay = self.view.pages[-1][4][0]
+        self.assertEqual(saved_overlay.signature_content, signature.content)
+
+    def test_manual_unknown_document_save_starts_wacom_when_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signature = CapturedSignature(
+                content=b"<svg><polyline points='3,3 4,4'/></svg>",
+                media_type="image/svg+xml",
+            )
+            provider = FakeSignatureProvider(signature)
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.wacom_manual_save"),
+                pdf_provider=FakePDFProviderWithoutAnchors(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create(
+                        "qsign.tests.controller.wacom_manual_save_detector"
+                    )
+                ),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    signature_capture_mode="wacom"
+                ),
+                signature_provider=provider,
+                template_root=directory,
+            )
+
+            controller.open_document("sample.pdf")
+            controller.set_manual_signature_rectangle(10, 10, 50, 30, 200, 200)
+
+            self.assertEqual(provider.capture_count, 0)
+
+            self.view.save_callback()
+
+            self.assertEqual(provider.capture_count, 1)
+            saved_overlay = self.view.pages[-1][4][0]
+            self.assertEqual(saved_overlay.signature_content, signature.content)
+
+    def test_manual_correction_of_recognized_box_refreshes_wacom_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signature = CapturedSignature(
+                content=b"<svg><polyline points='3,3 4,4'/></svg>",
+                media_type="image/svg+xml",
+            )
+            view = DeferredBackgroundViewer()
+            provider = FakeSignatureProvider(signature)
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=view,
+                logger=LoggingService.create(
+                    "qsign.tests.controller.wacom_manual_correction"
+                ),
+                pdf_provider=FakePDFProviderWithoutAnchors(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create(
+                        "qsign.tests.controller.wacom_manual_correction_detector"
+                    )
+                ),
+                template_repository=FakeTemplateRepository(),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    signature_capture_mode="wacom"
+                ),
+                signature_provider=provider,
+                template_root=directory,
+            )
+
+            controller.open_document("sample.pdf")
+            self.assertEqual(len(view.background_tasks), 1)
+
+            controller.set_manual_signature_rectangle(70, 80, 90, 50, 200, 200)
+            view.background_tasks[0]()
+
+            self.assertIsNone(view.pages[-1][4][0].signature_content)
+
+            view.save_callback()
+            view.background_tasks[1]()
+            view.ui_tasks[0]()
+
+            saved_overlay = view.pages[-1][4][0]
+            self.assertEqual(saved_overlay.left, 70)
+            self.assertEqual(saved_overlay.top, 80)
+            self.assertEqual(saved_overlay.width, 90)
+            self.assertEqual(saved_overlay.height, 50)
+            self.assertEqual(saved_overlay.signature_content, signature.content)
+
+    def test_manual_unknown_document_without_template_save_starts_wacom_when_selected(self) -> None:
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='3,3 4,4'/></svg>",
+            media_type="image/svg+xml",
+        )
+        provider = FakeSignatureProvider(signature)
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.wacom_manual_no_save"),
+            pdf_provider=FakePDFProviderWithoutAnchors(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create(
+                    "qsign.tests.controller.wacom_manual_no_save_detector"
+                )
+            ),
+            general_preferences_service=FakeGeneralPreferencesService(
+                signature_capture_mode="wacom"
+            ),
+            signature_provider=provider,
+        )
+
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(10, 10, 50, 30, 200, 200)
+        self.view.cancel_save_callback()
+
+        self.assertEqual(provider.capture_count, 1)
+        saved_overlay = self.view.pages[-1][4][0]
+        self.assertEqual(saved_overlay.signature_content, signature.content)
+
+    def test_open_document_renders_pdf_before_deferred_wacom_capture(self) -> None:
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='3,3 4,4'/></svg>",
+            media_type="image/svg+xml",
+        )
+        pages_before_capture: list[int] = []
+        provider = FakeSignatureProvider(
+            signature,
+            on_capture=lambda: pages_before_capture.append(len(self.view.pages)),
+        )
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.wacom_render_first"),
+            pdf_provider=FakePDFProviderWithoutAnchors(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create(
+                    "qsign.tests.controller.wacom_render_first_detector"
+                )
+            ),
+            template_repository=FakeTemplateRepository(),
+            general_preferences_service=FakeGeneralPreferencesService(
+                signature_capture_mode="wacom"
+            ),
+            signature_provider=provider,
+        )
+
+        controller.open_document("sample.pdf")
+
+        self.assertGreaterEqual(pages_before_capture[0], 1)
+
+    def test_close_document_cancels_pending_wacom_capture(self) -> None:
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='3,3 4,4'/></svg>",
+            media_type="image/svg+xml",
+        )
+        view = DeferredBackgroundViewer()
+        provider = CancellableSignatureProvider(signature)
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create("qsign.tests.controller.wacom_cancel"),
+            pdf_provider=FakePDFProviderWithoutAnchors(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create("qsign.tests.controller.wacom_cancel_detector")
+            ),
+            template_repository=FakeTemplateRepository(),
+            general_preferences_service=FakeGeneralPreferencesService(
+                signature_capture_mode="wacom"
+            ),
+            signature_provider=provider,
+        )
+
+        controller.open_document("sample.pdf")
+        controller.close_document()
+        view.background_tasks[0]()
+
+        self.assertEqual(provider.cancel_count, 1)
+        self.assertEqual(provider.capture_count, 1)
+        self.assertTrue(view.cleared)
+        self.assertEqual(controller.state.page_count, 0)
+        self.assertEqual(view.errors, [])
+        self.service.save_signed_preview.assert_not_called()
+
+    def test_completed_wacom_capture_refreshes_viewer_on_ui_task(self) -> None:
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='3,3 4,4'/></svg>",
+            media_type="image/svg+xml",
+        )
+        view = DeferredBackgroundViewer()
+        provider = FakeSignatureProvider(signature)
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create("qsign.tests.controller.wacom_ui_refresh"),
+            pdf_provider=FakePDFProviderWithoutAnchors(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create(
+                    "qsign.tests.controller.wacom_ui_refresh_detector"
+                )
+            ),
+            template_repository=FakeTemplateRepository(),
+            general_preferences_service=FakeGeneralPreferencesService(
+                signature_capture_mode="wacom"
+            ),
+            signature_provider=provider,
+        )
+
+        controller.open_document("sample.pdf")
+        view.background_tasks[0]()
+
+        self.assertEqual(len(view.ui_tasks), 1)
+        self.assertIsNone(view.pages[-1][4][0].signature_content)
+
+        view.ui_tasks[0]()
+
+        self.assertEqual(view.pages[-1][4][0].signature_content, signature.content)
+        self.service.save_signed_preview.assert_not_called()
+
+    def test_open_signature_dialog_uses_mouse_when_preference_is_mouse(self) -> None:
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='3,3 4,4'/></svg>",
+            media_type="image/svg+xml",
+        )
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.mouse_preference"),
+            general_preferences_service=FakeGeneralPreferencesService(
+                signature_capture_mode="mouse"
+            ),
+            signature_provider=FakeSignatureProvider(signature),
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(10, 10, 50, 30, 200, 200)
+        self.view.save_callback()
+
+        controller.open_signature_dialog()
+
+        self.assertTrue(self.view.open_signature_dialog_called)
+        saved_overlay = self.view.pages[-1][4][0]
+        self.assertEqual(
+            saved_overlay.signature_content,
+            b"<svg><polyline points='1,1 2,2'/></svg>",
+        )
 
     def test_save_signed_pdf_uses_current_signature_rectangle(self) -> None:
         self.service.save_signed_preview.return_value = Path("dist/signed/sample_signed.pdf")
@@ -998,12 +1423,18 @@ class PDFViewerControllerTests(unittest.TestCase):
 
 
 class FakeGeneralPreferencesService:
-    def __init__(self, auto_save_signed_documents: bool = False) -> None:
+    def __init__(
+        self,
+        auto_save_signed_documents: bool = False,
+        signature_capture_mode: str = "mouse",
+    ) -> None:
         self._auto_save_signed_documents = auto_save_signed_documents
+        self._signature_capture_mode = signature_capture_mode
 
     def get_supabase_settings(self) -> SupabaseSettings:
         return SupabaseSettings(
-            auto_save_signed_documents=self._auto_save_signed_documents
+            auto_save_signed_documents=self._auto_save_signed_documents,
+            signature_capture_mode=self._signature_capture_mode,
         )
 
 

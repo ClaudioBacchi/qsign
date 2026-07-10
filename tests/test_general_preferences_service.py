@@ -54,6 +54,7 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                     auto_sync_templates_on_startup=True,
                     auto_save_signed_documents=True,
                     show_signature_text=True,
+                    signature_capture_mode="wacom",
                 )
             )
 
@@ -75,8 +76,34 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                     auto_sync_templates_on_startup=True,
                     auto_save_signed_documents=True,
                     show_signature_text=True,
+                    signature_capture_mode="wacom",
                 ),
             )
+
+    def test_supabase_settings_persist_disabled_signature_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            service.save_supabase_settings(
+                SupabaseSettings(
+                    project_url="https://demo.supabase.co",
+                    password="secret",
+                    table_name="Meddoc",
+                    auto_sync_templates_on_startup=False,
+                    auto_save_signed_documents=True,
+                    show_signature_text=False,
+                    signature_capture_mode="wacom",
+                )
+            )
+
+            payload = json.loads(preferences.read_text(encoding="utf-8"))
+            self.assertFalse(payload["general"]["show_signature_text"])
+            self.assertFalse(service.get_supabase_settings().show_signature_text)
 
     def test_general_preferences_save_is_logged_without_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -96,6 +123,7 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                     auto_sync_templates_on_startup=True,
                     auto_save_signed_documents=True,
                     show_signature_text=True,
+                    signature_capture_mode="wacom",
                 )
             )
 
@@ -105,7 +133,9 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             self.assertTrue(context["auto_save_signed_documents"])
             self.assertTrue(context["auto_sync_templates_on_startup"])
             self.assertTrue(context["show_signature_text"])
+            self.assertEqual(context["signature_capture_mode"], "wacom")
             self.assertIn("auto_save_signed_documents", context["changed_fields"])
+            self.assertIn("signature_capture_mode", context["changed_fields"])
             self.assertNotIn("https://demo.supabase.co", str(context))
             self.assertNotIn("secret", str(context))
 
@@ -360,6 +390,55 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                     selected_user_name="Mario Rossi",
                 ),
             )
+
+    def test_plain_internal_test_preferences_are_read_for_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            preferences.write_text(
+                json.dumps(
+                    {
+                        "general": {
+                            "erp_users_url": {
+                                "protected_with": "plain-internal-test",
+                                "value": "https://erp.example.test/users",
+                            },
+                            "erp_basic_username": {
+                                "protected_with": "plain-internal-test",
+                                "value": "api-user",
+                            },
+                            "erp_basic_password": {
+                                "protected_with": "plain-internal-test",
+                                "value": "api-secret",
+                            },
+                            "supabase_url": {
+                                "protected_with": "plain-internal-test",
+                                "value": "https://demo.supabase.co",
+                            },
+                            "supabase_password": {
+                                "protected_with": "plain-internal-test",
+                                "value": "sb_publishable_demo",
+                            },
+                            "admin_password": {
+                                "protected_with": "plain-internal-test",
+                                "value": "admin-secret",
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = GeneralPreferencesService(preferences_path=preferences)
+
+            self.assertEqual(
+                service.get_erp_user_settings(),
+                ErpUserSettings(
+                    users_url="https://erp.example.test/users",
+                    basic_username="api-user",
+                    basic_password="api-secret",
+                ),
+            )
+            self.assertEqual(service.get_supabase_settings().project_url, "https://demo.supabase.co")
+            self.assertTrue(service.verify_admin_password("admin-secret"))
 
     def test_admin_password_is_encrypted_and_verified(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

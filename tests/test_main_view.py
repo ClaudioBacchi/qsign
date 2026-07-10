@@ -93,12 +93,62 @@ class MainViewTests(unittest.TestCase):
         self.assertFalse(view._document_viewer.visible)
         self.assertEqual(
             view._viewer_placeholder.content.content.src,
-            "images/logo_qsign_grande.png",
+            view._image_data_uri("images/logo_qsign_grande.png"),
         )
 
         view._viewer_placeholder.on_tap(None)
 
         self.assertEqual(page.launched_urls, ["https://queensrl.net"])
+
+    def test_pdf_mouse_wheel_changes_page_when_document_is_visible(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        calls: list[str] = []
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: calls.append("previous"),
+            on_next=lambda: calls.append("next"),
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=200,
+            image_height=300,
+            page_number=1,
+            page_count=3,
+            zoom=1.0,
+        )
+
+        view._signature_surface.on_scroll(
+            SimpleNamespace(scroll_delta=SimpleNamespace(y=80))
+        )
+        view._signature_surface.on_scroll(
+            SimpleNamespace(scroll_delta=SimpleNamespace(y=-80))
+        )
+
+        self.assertEqual(calls, ["next", "previous"])
+
+    def test_pdf_mouse_wheel_is_ignored_without_visible_document(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        calls: list[str] = []
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: calls.append("previous"),
+            on_next=lambda: calls.append("next"),
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+
+        view._signature_surface.on_scroll(
+            SimpleNamespace(scroll_delta=SimpleNamespace(y=80))
+        )
+
+        self.assertEqual(calls, [])
 
     def test_logo_click_uses_flet_task_for_async_launch_url(self) -> None:
         page = FakeAsyncLaunchPage()
@@ -649,7 +699,7 @@ class MainViewTests(unittest.TestCase):
 
             self.assertIsNone(page.dialog.title)
             controls = page.dialog.content.content.controls
-            self.assertEqual(controls[0].content.src, "images/logo_qsign_grande.png")
+            self.assertTrue(controls[0].content.src.startswith("data:image/png;base64,"))
             self.assertEqual(controls[1].value, "Versione: 01.001.001")
             site_button = controls[3].controls[1]
             support_button = controls[4].controls[1]
@@ -660,7 +710,7 @@ class MainViewTests(unittest.TestCase):
                 footer.controls[0].value,
                 "Diritto di Autore @ 2026 Queen Srl. Tutti i diritti riservati",
             )
-            self.assertEqual(footer.controls[1].src, "images/logo_queen_25anni.png")
+            self.assertTrue(footer.controls[1].src.startswith("data:image/png;base64,"))
 
             site_button.on_click(None)
             support_button.on_click(None)
@@ -743,14 +793,15 @@ class MainViewTests(unittest.TestCase):
         controls[3].value = "SaluteLavoro"
         controls[4].value = True
         controls[5].value = True
-        controls[6].value = True
-        controls[7].controls[0].on_click(None)
+        controls[7].value = "wacom"
+        controls[8].value = True
+        controls[9].controls[0].on_click(None)
 
         self.assertEqual(
-            controls[8].value,
+            controls[10].value,
             "Connessione Supabase riuscita",
         )
-        controls[7].controls[3].on_click(None)
+        controls[9].controls[3].on_click(None)
 
         self.assertEqual(
             service.settings,
@@ -761,9 +812,37 @@ class MainViewTests(unittest.TestCase):
                 auto_sync_templates_on_startup=True,
                 auto_save_signed_documents=True,
                 show_signature_text=True,
+                signature_capture_mode="wacom",
             ),
         )
-        self.assertEqual(controls[8].value, "Impostazioni salvate")
+        self.assertEqual(controls[10].value, "Impostazioni salvate")
+
+    def test_general_preferences_save_disabled_signature_text(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.settings = SupabaseSettings(
+            project_url="https://demo.supabase.co",
+            password="secret",
+            table_name="Meddoc",
+            auto_sync_templates_on_startup=True,
+            auto_save_signed_documents=True,
+            show_signature_text=True,
+            signature_capture_mode="wacom",
+        )
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+
+        view.show_general_preferences()
+        controls = page.dialog.content.content.controls
+        controls[4].value = "false"
+        controls[5].value = "false"
+        controls[8].value = "false"
+        controls[9].controls[3].on_click(None)
+
+        self.assertFalse(service.settings.auto_sync_templates_on_startup)
+        self.assertFalse(service.settings.auto_save_signed_documents)
+        self.assertFalse(service.settings.show_signature_text)
+        self.assertEqual(service.settings.signature_capture_mode, "wacom")
 
     def test_general_preferences_checks_and_creates_supabase_table(self) -> None:
         page = FakePage()
@@ -776,21 +855,21 @@ class MainViewTests(unittest.TestCase):
         controls[1].value = "https://demo.supabase.co"
         controls[2].value = "secret"
         controls[3].value = "Meddoc"
-        controls[7].controls[1].on_click(None)
+        controls[9].controls[1].on_click(None)
 
         self.assertEqual(
-            controls[8].value,
+            controls[10].value,
             (
                 "Tabella template Supabase 'Meddoc' non trovata. "
                 "Premi 'Crea tabella' per duplicarla da SaluteLavoro."
             ),
         )
 
-        controls[7].controls[2].on_click(None)
+        controls[9].controls[2].on_click(None)
 
         self.assertEqual(service.created_table_settings.table_name, "Meddoc")
         self.assertEqual(
-            controls[8].value,
+            controls[10].value,
             "Tabella template Supabase 'Meddoc' pronta",
         )
 
@@ -813,11 +892,12 @@ class MainViewTests(unittest.TestCase):
         self.assertNotIn("URL progetto Supabase", labels)
         self.assertNotIn("Password/API key Supabase", labels)
         self.assertNotIn("Tabella template Supabase", labels)
-        self.assertEqual([_button_label(button) for button in controls[3].controls], ["Salva"])
+        self.assertEqual([_button_label(button) for button in controls[5].controls], ["Salva"])
 
         controls[1].value = True
         controls[2].value = True
-        controls[3].controls[0].on_click(None)
+        controls[4].value = "wacom"
+        controls[5].controls[0].on_click(None)
 
         self.assertEqual(
             service.settings,
@@ -827,6 +907,7 @@ class MainViewTests(unittest.TestCase):
                 table_name="Meddoc",
                 auto_sync_templates_on_startup=True,
                 auto_save_signed_documents=True,
+                signature_capture_mode="wacom",
             ),
         )
 

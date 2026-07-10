@@ -1,131 +1,131 @@
 {
-  "schema_version": "1.0",
-  "template_id": "learned_bsnscreen_multitest_d2604015_paziente_fagnoli_emanuele_nascita_azienda",
   "code": "LEARNED_BSNSCREEN_MULTITEST_D2604015_PAZIENTE_FAGNOLI_EMANUELE_NASCITA_AZIENDA",
   "name": "Template provvisorio learned_bsnscreen_multitest_d2604015_paziente_fagnoli_emanuele_nascita_azienda",
-  "description": "Template creato dal primo flusso manuale QSign.",
-  "document_type": "manual_signature_flow",
-  "version": "0.1.0",
   "state": "draft",
+  "version": "0.1.0",
   "priority": 5,
-  "document_rules": [],
-  "recognition_rules": [
-    {
-      "rule_id": "manual-filename-stem",
-      "rule_type": "literal",
-      "expression": "851058_yg9c1pljxw",
-      "scope": "document",
-      "required": false,
-      "weight": 0.25
-    },
-    {
-      "rule_id": "manual-recognition-phrase",
-      "rule_type": "literal",
-      "expression": "BSNScreen Cup Multitest DOA8 LOT: D2604015 SCAD: 31/03/2028 07/07/2026 - 17:38 PAZIENTE: Fagnoli Emanuele DATA DI NASCITA: 25/12/1971 AZIENDA: AUTOTRASPORTI FAG",
-      "scope": "document",
-      "required": false,
-      "weight": 6.0
-    },
-    {
-      "rule_id": "manual-structural-signature",
-      "rule_type": "literal",
-      "expression": "bsnscreen multitest d2604015 paziente fagnoli emanuele nascita azienda autotrasporti nicola callea punto prelievo immagine normale creatinina",
-      "scope": "document",
-      "required": true,
-      "weight": 10.0
-    },
-    {
-      "rule_id": "manual-visual-signature",
-      "rule_type": "visual_hash",
-      "expression": "0000000000000000000000007fe0003c12200024774a0000000000007ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffa0b3c7ff800007ff8000040f800007ff800007ff800007ff80000000000000000000000000000000000000000000000000000000000003f87e1fc00000000",
-      "scope": "document",
-      "required": true,
-      "weight": 30.0
-    },
-    {
-      "rule_id": "manual-keyword-1",
-      "rule_type": "literal",
-      "expression": "bsnscreen",
-      "scope": "document",
-      "required": false,
-      "weight": 1.25
-    },
-    {
-      "rule_id": "manual-keyword-2",
-      "rule_type": "literal",
-      "expression": "multitest",
-      "scope": "document",
-      "required": false,
-      "weight": 1.25
-    },
-    {
-      "rule_id": "manual-keyword-3",
-      "rule_type": "literal",
-      "expression": "d2604015",
-      "scope": "document",
-      "required": false,
-      "weight": 1.25
-    },
-    {
-      "rule_id": "manual-keyword-4",
-      "rule_type": "literal",
-      "expression": "paziente",
-      "scope": "document",
-      "required": false,
-      "weight": 1.25
-    },
-    {
-      "rule_id": "manual-keyword-5",
-      "rule_type": "literal",
-      "expression": "fagnoli",
-      "scope": "document",
-      "required": false,
-      "weight": 1.25
-    },
-    {
-      "rule_id": "manual-keyword-6",
-      "rule_type": "literal",
-      "expression": "emanuele",
-      "scope": "document",
-      "required": false,
-      "weight": 1.25
-    },
-    {
-      "rule_id": "manual-keyword-7",
-      "rule_type": "literal",
-      "expression": "nascita",
-      "scope": "document",
-      "required": false,
-      "weight": 1.25
-    },
-    {
-      "rule_id": "manual-keyword-8",
-      "rule_type": "literal",
-      "expression": "azienda",
-      "scope": "document",
-      "required": false,
-      "weight": 1.25
-    }
-  ],
+  "settings": {
+    "ambiguity_margin": 5,
+    "normalization_profile": "default",
+    "recognition_threshold": 80
+  },
+  "description": "Template creato dal primo flusso manuale QSign.",
+  "template_id": "learned_bsnscreen_multitest_d2604015_paziente_fagnoli_emanuele_nascita_azienda",
   "anchor_rules": [],
+  "document_type": "manual_signature_flow",
+  "document_rules": [],
+  "schema_version": "1.0",
   "placement_rules": [
     {
-      "placement_id": "manual-signature",
       "role": "signer",
-      "anchor_id": "manual",
       "side": "manual",
-      "alignment": "manual",
-      "x_offset": 417.0,
-      "y_offset": 679.0,
       "width": 199.0,
       "height": 112.0,
+      "required": true,
+      "x_offset": 417.0,
+      "y_offset": 679.0,
+      "alignment": "manual",
+      "anchor_id": "manual",
       "page_index": 0,
-      "required": true
+      "placement_id": "manual-signature"
     }
   ],
-  "settings": {
-    "recognition_threshold": 80,
-    "ambiguity_margin": 5,
-    "normalization_profile": "default"
-  }
+  "recognition_rules": [
+    {
+      "scope": "document",
+      "weight": 0.25,
+      "rule_id": "manual-filename-stem",
+      "required": false,
+      "rule_type": "literal",
+      "expression": "851058_yg9c1pljxw"
+    },
+    {
+      "scope": "document",
+      "weight": 6.0,
+      "rule_id": "manual-recognition-phrase",
+      "required": false,
+      "rule_type": "literal",
+      "expression": "BSNScreen Cup Multitest DOA8 LOT: D2604015 SCAD: 31/03/2028 07/07/2026 - 17:38 PAZIENTE: Fagnoli Emanuele DATA DI NASCITA: 25/12/1971 AZIENDA: AUTOTRASPORTI FAG"
+    },
+    {
+      "scope": "document",
+      "weight": 10.0,
+      "rule_id": "manual-structural-signature",
+      "required": true,
+      "rule_type": "literal",
+      "expression": "bsnscreen multitest d2604015 paziente fagnoli emanuele nascita azienda autotrasporti nicola callea punto prelievo immagine normale creatinina"
+    },
+    {
+      "scope": "document",
+      "weight": 30.0,
+      "rule_id": "manual-visual-signature",
+      "required": true,
+      "rule_type": "visual_hash",
+      "expression": "0000000000000000000000007fe0003c12200024774a0000000000007ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffbfffc7ffa0b3c7ff800007ff8000040f800007ff800007ff800007ff80000000000000000000000000000000000000000000000000000000000003f87e1fc00000000"
+    },
+    {
+      "scope": "document",
+      "weight": 1.25,
+      "rule_id": "manual-keyword-1",
+      "required": false,
+      "rule_type": "literal",
+      "expression": "bsnscreen"
+    },
+    {
+      "scope": "document",
+      "weight": 1.25,
+      "rule_id": "manual-keyword-2",
+      "required": false,
+      "rule_type": "literal",
+      "expression": "multitest"
+    },
+    {
+      "scope": "document",
+      "weight": 1.25,
+      "rule_id": "manual-keyword-3",
+      "required": false,
+      "rule_type": "literal",
+      "expression": "d2604015"
+    },
+    {
+      "scope": "document",
+      "weight": 1.25,
+      "rule_id": "manual-keyword-4",
+      "required": false,
+      "rule_type": "literal",
+      "expression": "paziente"
+    },
+    {
+      "scope": "document",
+      "weight": 1.25,
+      "rule_id": "manual-keyword-5",
+      "required": false,
+      "rule_type": "literal",
+      "expression": "fagnoli"
+    },
+    {
+      "scope": "document",
+      "weight": 1.25,
+      "rule_id": "manual-keyword-6",
+      "required": false,
+      "rule_type": "literal",
+      "expression": "emanuele"
+    },
+    {
+      "scope": "document",
+      "weight": 1.25,
+      "rule_id": "manual-keyword-7",
+      "required": false,
+      "rule_type": "literal",
+      "expression": "nascita"
+    },
+    {
+      "scope": "document",
+      "weight": 1.25,
+      "rule_id": "manual-keyword-8",
+      "required": false,
+      "rule_type": "literal",
+      "expression": "azienda"
+    }
+  ]
 }
