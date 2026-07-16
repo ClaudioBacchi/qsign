@@ -39,6 +39,9 @@ class FakeViewer:
         self.cancel_save_callback = None
         self.open_signature_dialog_called = False
         self.defer_signature_capture_count = 0
+        self.defer_viewer_refresh_count = 0
+        self.discard_callback = None
+        self.cancel_discard_callback = None
 
     def display_document(
         self,
@@ -81,6 +84,10 @@ class FakeViewer:
         self.save_callback = on_confirm
         self.cancel_save_callback = on_cancel
 
+    def ask_discard_signed_document(self, on_confirm, on_cancel) -> None:
+        self.discard_callback = on_confirm
+        self.cancel_discard_callback = on_cancel
+
     def open_signature_dialog(self, on_confirm, on_clear, on_cancel) -> None:
         self.open_signature_dialog_called = True
         on_confirm(
@@ -92,6 +99,10 @@ class FakeViewer:
 
     def defer_signature_capture(self, callback) -> None:
         self.defer_signature_capture_count += 1
+        callback()
+
+    def defer_viewer_refresh(self, callback) -> None:
+        self.defer_viewer_refresh_count += 1
         callback()
 
     def run_background_task(self, callback) -> None:
@@ -704,6 +715,7 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(provider.capture_count, 1)
         saved_overlay = self.view.pages[-1][4][0]
         self.assertEqual(saved_overlay.signature_content, signature.content)
+        self.assertEqual(self.view.defer_viewer_refresh_count, 1)
 
     def test_open_signature_dialog_reports_wacom_error_without_mouse_fallback(self) -> None:
         provider = FailingSignatureProvider()
@@ -994,6 +1006,7 @@ class PDFViewerControllerTests(unittest.TestCase):
         view.ui_tasks[0]()
 
         self.assertEqual(view.pages[-1][4][0].signature_content, signature.content)
+        self.assertEqual(view.defer_viewer_refresh_count, 1)
         self.service.save_signed_preview.assert_not_called()
 
     def test_open_signature_dialog_uses_mouse_when_preference_is_mouse(self) -> None:
@@ -1052,6 +1065,125 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.service.close_document.assert_called_once()
         self.assertTrue(self.view.cleared)
         self.assertIn("PDF firmato salvato", self.view.statuses[-1])
+
+    def test_unsigned_save_prompt_blocks_page_change_after_signature(self) -> None:
+        self.controller.open_document("sample.pdf")
+        self.controller.set_manual_signature_rectangle(
+            left=20,
+            top=30,
+            width=80,
+            height=40,
+            image_width=200,
+            image_height=200,
+        )
+        self.controller.apply_mouse_signature(
+            CapturedSignature(
+                content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                media_type="image/svg+xml",
+            )
+        )
+        calls_before = self.service.render_page.call_count
+
+        self.controller.next_page()
+
+        self.assertEqual(self.controller.state.page_index, 0)
+        self.assertIsNotNone(self.view.discard_callback)
+        self.assertEqual(self.service.render_page.call_count, calls_before)
+
+        self.view.discard_callback()
+
+        self.assertEqual(self.controller.state.page_index, 1)
+        self.assertTrue(self.controller.has_unsaved_signed_document())
+
+    def test_close_document_requires_confirmation_after_unsaved_signature(self) -> None:
+        self.controller.open_document("sample.pdf")
+        self.controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        self.controller.apply_mouse_signature(
+            CapturedSignature(
+                content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                media_type="image/svg+xml",
+            )
+        )
+
+        self.controller.close_document()
+
+        self.service.close_document.assert_not_called()
+        self.assertFalse(self.view.cleared)
+        self.assertIsNotNone(self.view.discard_callback)
+
+        self.view.discard_callback()
+
+        self.service.close_document.assert_called_once()
+        self.assertTrue(self.view.cleared)
+        self.assertFalse(self.controller.has_unsaved_signed_document())
+
+    def test_added_signature_box_is_saved_and_signed_only_after_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first_signature = CapturedSignature(
+                content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                media_type="image/svg+xml",
+            )
+            second_signature = CapturedSignature(
+                content=b"<svg><polyline points='3,3 4,4'/></svg>",
+                media_type="image/svg+xml",
+            )
+            provider = FakeSignatureProvider(first_signature)
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.multi_box"),
+                pdf_provider=FakePDFProviderWithoutAnchors(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create("qsign.tests.controller.multi_box_detector")
+                ),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    signature_capture_mode="wacom"
+                ),
+                signature_provider=provider,
+                template_root=directory,
+            )
+
+            controller.open_document("sample.pdf")
+            controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+            self.view.save_callback()
+            self.assertEqual(provider.capture_count, 1)
+
+            provider.signature = second_signature
+            controller.add_signature_box()
+            self.assertIsNotNone(self.view.discard_callback)
+            self.view.discard_callback()
+            controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+            self.view.save_callback()
+
+            self.assertEqual(provider.capture_count, 1)
+            overlays = self.view.pages[-1][4]
+            self.assertEqual([overlay.label for overlay in overlays], ["Zona firma 1", "Zona firma 2"])
+            self.assertEqual(overlays[0].signature_content, first_signature.content)
+            self.assertIsNone(overlays[1].signature_content)
+            saved_templates = list(Path(directory).glob("learned_*.json"))
+            self.assertEqual(len(saved_templates), 1)
+            content = saved_templates[0].read_text(encoding="utf-8")
+            self.assertIn('"placement_id": "manual-signature"', content)
+            self.assertIn('"placement_id": "manual-signature-2"', content)
+
+            controller.open_signature_dialog(overlays[1].target_id)
+
+            self.assertEqual(provider.capture_count, 2)
+            overlays = self.view.pages[-1][4]
+            self.assertEqual(overlays[1].signature_content, second_signature.content)
+
+            self.service.save_signed_previews.return_value = Path(
+                "dist/signed/sample_signed.pdf"
+            )
+            controller.save_signed_pdf()
+
+            signatures = self.service.save_signed_previews.call_args.args[0]
+            self.assertEqual(len(signatures), 2)
+            self.assertEqual(signatures[0][0], first_signature)
+            self.assertEqual(signatures[0][1].x, 20)
+            self.assertEqual(signatures[1][0], second_signature)
+            self.assertEqual(signatures[1][1].x, 110)
+            self.service.save_signed_preview.assert_not_called()
 
     def test_confirmed_mouse_signature_auto_saves_when_preference_is_enabled(self) -> None:
         self.service.save_signed_preview.return_value = Path(
@@ -1171,6 +1303,46 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(len(overlays), 1)
         self.assertEqual(overlays[0].left, 70)
         self.assertEqual(overlays[0].top, 80)
+
+    def test_learned_template_wins_over_base_template_when_scores_are_equal(self) -> None:
+        self.controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.learned_over_base"),
+            pdf_provider=FakePDFProviderWithoutAnchors(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create("qsign.tests.controller.learned_over_base_detector")
+            ),
+            template_repository=FakeBaseAndLearnedTemplateRepository(),
+        )
+
+        self.controller.open_document("sample.pdf")
+
+        overlays = self.view.pages[-1][4]
+        self.assertEqual([overlay.label for overlay in overlays], ["Zona firma 1", "Zona firma 2"])
+        self.assertEqual(overlays[0].left, 20)
+        self.assertEqual(overlays[1].left, 110)
+
+    def test_learned_manual_boxes_are_used_even_when_demo_anchor_matches(self) -> None:
+        self.controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.learned_manual_boxes"),
+            pdf_provider=FakePDFProvider(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create(
+                    "qsign.tests.controller.learned_manual_boxes_detector"
+                )
+            ),
+            template_repository=FakeLearnedManualBoxesWithDemoAnchorRepository(),
+        )
+
+        self.controller.open_document("sample.pdf")
+
+        overlays = self.view.pages[-1][4]
+        self.assertEqual([overlay.label for overlay in overlays], ["Zona firma 1", "Zona firma 2"])
+        self.assertEqual(overlays[0].left, 20)
+        self.assertEqual(overlays[1].left, 110)
 
     def test_learned_filename_stem_must_match_exactly_after_normalization(self) -> None:
         self.document = PDFDocument(
@@ -1418,6 +1590,7 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(overlays[0].signature_content, b"<svg xmlns='http://www.w3.org/2000/svg'></svg>")
 
         self.controller.next_page()
+        self.view.discard_callback()
 
         self.assertEqual(self.view.pages[-1][4], ())
 
@@ -2092,6 +2265,108 @@ class FakeMultipleLearnedTemplateRepository:
             for template in self.list_templates()
             if template.template_id == template_id
         )
+
+
+class FakeBaseAndLearnedTemplateRepository:
+    def list_templates(self) -> tuple[Template, ...]:
+        base_template = FakeTemplateRepository().list_templates()[0]
+        learned_template = Template(
+            template_id="learned_documento_speciale",
+            code="LEARNED_DOCUMENTO_SPECIALE",
+            name="Learned documento speciale",
+            document_type="manual_signature_flow",
+            version="0.1.0",
+            state=TemplateState.DRAFT,
+            recognition_rules=(
+                RecognitionRule(
+                    rule_id="contains-special",
+                    rule_type="literal",
+                    expression="Documento Speciale",
+                    required=True,
+                ),
+            ),
+            placement_rules=(
+                PlacementRule(
+                    placement_id="manual-signature",
+                    role="signer",
+                    anchor_id="manual",
+                    side="manual",
+                    alignment="manual",
+                    x_offset=20,
+                    y_offset=30,
+                    width=80,
+                    height=40,
+                ),
+                PlacementRule(
+                    placement_id="manual-signature-2",
+                    role="signer",
+                    anchor_id="manual",
+                    side="manual",
+                    alignment="manual",
+                    x_offset=110,
+                    y_offset=120,
+                    width=50,
+                    height=30,
+                ),
+            ),
+        )
+        return (base_template, learned_template)
+
+    def get_template(self, template_id: str) -> Template:
+        return next(
+            template
+            for template in self.list_templates()
+            if template.template_id == template_id
+        )
+
+
+class FakeLearnedManualBoxesWithDemoAnchorRepository:
+    def list_templates(self) -> tuple[Template, ...]:
+        return (
+            Template(
+                template_id="learned_in_fede",
+                code="LEARNED_IN_FEDE",
+                name="Learned in fede",
+                document_type="manual_signature_flow",
+                version="0.1.0",
+                state=TemplateState.DRAFT,
+                recognition_rules=(
+                    RecognitionRule(
+                        rule_id="contains-in-fede",
+                        rule_type="literal",
+                        expression="In fede",
+                        required=True,
+                    ),
+                ),
+                placement_rules=(
+                    PlacementRule(
+                        placement_id="manual-signature",
+                        role="signer",
+                        anchor_id="manual",
+                        side="manual",
+                        alignment="manual",
+                        x_offset=20,
+                        y_offset=30,
+                        width=80,
+                        height=40,
+                    ),
+                    PlacementRule(
+                        placement_id="manual-signature-2",
+                        role="signer",
+                        anchor_id="manual",
+                        side="manual",
+                        alignment="manual",
+                        x_offset=110,
+                        y_offset=120,
+                        width=50,
+                        height=30,
+                    ),
+                ),
+            ),
+        )
+
+    def get_template(self, template_id: str) -> Template:
+        return self.list_templates()[0]
 
 
 class FakeFilenameSpecificLearnedTemplateRepository:

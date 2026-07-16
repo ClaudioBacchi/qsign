@@ -50,7 +50,9 @@ class PDFDigitalSignatureWriterTests(unittest.TestCase):
             self.assertEqual(len(digital_writer.calls), 1)
             call = digital_writer.calls[0]
             self.assertNotEqual(call[0], destination)
-            self.assertEqual(call[1], destination)
+            self.assertNotEqual(call[1], destination)
+            self.assertEqual(call[1].parent, destination.parent)
+            self.assertFalse(call[1].exists())
             self.assertEqual(call[2], area)
             self.assertTrue(destination.read_bytes().startswith(b"%PDF"))
 

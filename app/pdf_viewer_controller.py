@@ -87,6 +87,12 @@ class PDFViewerView(Protocol):
         on_cancel: "SaveTemplateCallback",
     ) -> None: ...
 
+    def ask_discard_signed_document(
+        self,
+        on_confirm: "SaveTemplateCallback",
+        on_cancel: "SaveTemplateCallback",
+    ) -> None: ...
+
     def open_signature_dialog(
         self,
         on_confirm: "SignatureConfirmCallback",
@@ -101,6 +107,8 @@ class PDFViewerView(Protocol):
     def show_status(self, message: str) -> None: ...
 
     def defer_signature_capture(self, callback: Callable[[], None]) -> None: ...
+
+    def defer_viewer_refresh(self, callback: Callable[[], None]) -> None: ...
 
     def run_background_task(self, callback: Callable[[], None]) -> None: ...
 
@@ -127,10 +135,21 @@ class AnchorOverlay:
     label: str
     signature_content: bytes | None = None
     signature_media_type: str = "image/svg+xml"
+    target_id: str | None = None
 
 
 class SaveTemplateCallback(Protocol):
     def __call__(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SignatureTarget:
+    target_id: str
+    rectangle: Rectangle
+    page_index: int
+    anchor_match: AnchorMatch | None = None
+    signature: CapturedSignature | None = None
+    role: str = "signer"
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +158,8 @@ class SignatureRectangleSnapshot:
     page_index: int | None
     anchor_match: AnchorMatch | None
     workflow_status: str
+    targets: tuple[SignatureTarget, ...] = ()
+    selected_target_id: str | None = None
 
 
 class SignatureConfirmCallback(Protocol):
@@ -190,15 +211,25 @@ class PDFViewerController:
         self._signature_rectangle: Rectangle | None = None
         self._signature_page_index: int | None = None
         self._captured_signature: CapturedSignature | None = None
+        self._signature_targets: tuple[SignatureTarget, ...] = ()
+        self._selected_signature_target_id: str | None = None
+        self._add_signature_box_mode = False
         self._recognized_template: Template | None = None
         self._pending_manual_rectangle_restore: SignatureRectangleSnapshot | None = None
         self._workflow_status = "Apri un PDF"
+        self._has_unsaved_signature = False
         self._wacom_capture_cancel: threading.Event | None = None
         self._wacom_capture_generation = 0
         self.state = PDFViewerState()
 
     def open_document(self, path: str) -> None:
+        if self._confirm_unsaved_signature(lambda: self._open_document_now(path)):
+            return
+        self._open_document_now(path)
+
+    def _open_document_now(self, path: str) -> None:
         try:
+            self._has_unsaved_signature = False
             document = self._pdf_service.open_document(Path(path))
             self.state = PDFViewerState(page_count=document.page_count)
             self._analyze_document(Path(path))
@@ -214,13 +245,22 @@ class PDFViewerController:
             self._signature_rectangle = None
             self._signature_page_index = None
             self._captured_signature = None
+            self._signature_targets = ()
+            self._selected_signature_target_id = None
+            self._add_signature_box_mode = False
             self._recognized_template = None
             self._pending_manual_rectangle_restore = None
+            self._has_unsaved_signature = False
             self._workflow_status = "Documento non aperto"
             self._view.clear_document()
             self._view.show_error(str(error))
 
     def close_document(self) -> None:
+        if self._confirm_unsaved_signature(self._close_document_now):
+            return
+        self._close_document_now()
+
+    def _close_document_now(self) -> None:
         self._cancel_wacom_capture()
         try:
             if self._pdf_service.current_document is not None:
@@ -233,8 +273,12 @@ class PDFViewerController:
             self._signature_rectangle = None
             self._signature_page_index = None
             self._captured_signature = None
+            self._signature_targets = ()
+            self._selected_signature_target_id = None
+            self._add_signature_box_mode = False
             self._recognized_template = None
             self._pending_manual_rectangle_restore = None
+            self._has_unsaved_signature = False
             self._workflow_status = "Apri un PDF"
             self._view.set_manual_signature_mode(False)
             self._view.clear_document()
@@ -251,31 +295,67 @@ class PDFViewerController:
         self._signature_rectangle = None
         self._signature_page_index = None
         self._captured_signature = None
+        self._signature_targets = ()
+        self._selected_signature_target_id = None
+        self._add_signature_box_mode = False
         self._recognized_template = None
         self._pending_manual_rectangle_restore = None
+        self._has_unsaved_signature = False
         self._workflow_status = "Apri un PDF"
 
     def previous_page(self) -> None:
+        if self._confirm_unsaved_signature(self._previous_page_now):
+            return
+        self._previous_page_now()
+
+    def _previous_page_now(self) -> None:
         if self.state.page_index > 0:
             self.state.page_index -= 1
             self._render_current_page()
 
     def next_page(self) -> None:
+        if self._confirm_unsaved_signature(self._next_page_now):
+            return
+        self._next_page_now()
+
+    def _next_page_now(self) -> None:
         if self.state.page_index + 1 < self.state.page_count:
             self.state.page_index += 1
             self._render_current_page()
 
     def zoom_in(self) -> None:
+        if self._confirm_unsaved_signature(self._zoom_in_now):
+            return
+        self._zoom_in_now()
+
+    def _zoom_in_now(self) -> None:
         new_zoom = min(
             self._MAXIMUM_ZOOM, self.state.zoom + self._ZOOM_STEP
         )
         self._set_zoom(new_zoom)
 
     def zoom_out(self) -> None:
+        if self._confirm_unsaved_signature(self._zoom_out_now):
+            return
+        self._zoom_out_now()
+
+    def _zoom_out_now(self) -> None:
         new_zoom = max(
             self._MINIMUM_ZOOM, self.state.zoom - self._ZOOM_STEP
         )
         self._set_zoom(new_zoom)
+
+    def has_unsaved_signed_document(self) -> bool:
+        return self._has_unsaved_signature
+
+    def _confirm_unsaved_signature(self, on_confirm: Callable[[], None]) -> bool:
+        if not self._has_unsaved_signature:
+            return False
+        self._view.ask_discard_signed_document(
+            on_confirm,
+            lambda: self._view.show_status("salvataggio richiesto prima di continuare"),
+        )
+        return True
 
     def _set_zoom(self, zoom: float) -> None:
         if self.state.page_count and zoom != self.state.zoom:
@@ -288,6 +368,98 @@ class PDFViewerController:
             and 0 <= self._signature_page_index < self.state.page_count
         ):
             self.state.page_index = self._signature_page_index
+
+    def _sync_selected_signature_target(self) -> None:
+        target = self._selected_signature_target()
+        if target is None:
+            self._signature_rectangle = None
+            self._signature_page_index = None
+            self._signature_anchor_match = None
+            self._captured_signature = None
+            return
+        self._signature_rectangle = target.rectangle
+        self._signature_page_index = target.page_index
+        self._signature_anchor_match = target.anchor_match
+        self._captured_signature = target.signature
+
+    def _set_signature_targets(
+        self,
+        targets: tuple[SignatureTarget, ...],
+        selected_target_id: str | None = None,
+    ) -> None:
+        self._signature_targets = targets
+        if selected_target_id is None and targets:
+            selected_target_id = targets[0].target_id
+        self._selected_signature_target_id = selected_target_id
+        self._sync_selected_signature_target()
+
+    def _selected_signature_target(self) -> SignatureTarget | None:
+        if not self._signature_targets:
+            return None
+        selected_id = self._selected_signature_target_id
+        if selected_id is not None:
+            for target in self._signature_targets:
+                if target.target_id == selected_id:
+                    return target
+        return self._signature_targets[0]
+
+    def _select_signature_target(self, target_id: str | None) -> bool:
+        if target_id is None:
+            return False
+        for target in self._signature_targets:
+            if target.target_id == target_id:
+                self._selected_signature_target_id = target_id
+                self._sync_selected_signature_target()
+                return True
+        return False
+
+    def _target_id_for_index(self, index: int) -> str:
+        return f"signature-{index + 1}"
+
+    def _next_signature_target_id(self) -> str:
+        used = {target.target_id for target in self._signature_targets}
+        index = 0
+        while self._target_id_for_index(index) in used:
+            index += 1
+        return self._target_id_for_index(index)
+
+    def _target_display_index(self, target: SignatureTarget) -> int:
+        try:
+            return self._signature_targets.index(target) + 1
+        except ValueError:
+            return 1
+
+    def _replace_selected_target_signature(
+        self, signature: CapturedSignature | None
+    ) -> None:
+        selected = self._selected_signature_target()
+        if selected is None:
+            return
+        self._replace_target_signature(selected.target_id, signature)
+
+    def _replace_target_signature(
+        self, target_id: str, signature: CapturedSignature | None
+    ) -> bool:
+        if not any(target.target_id == target_id for target in self._signature_targets):
+            return False
+        self._signature_targets = tuple(
+            SignatureTarget(
+                target_id=target.target_id,
+                rectangle=target.rectangle,
+                page_index=target.page_index,
+                anchor_match=target.anchor_match,
+                signature=(
+                    signature
+                    if target.target_id == target_id
+                    else target.signature
+                ),
+                role=target.role,
+            )
+            for target in self._signature_targets
+        )
+        self._selected_signature_target_id = target_id
+        self._sync_selected_signature_target()
+        return True
 
     def _render_current_page(self) -> None:
         document = self._pdf_service.current_document
@@ -327,8 +499,12 @@ class PDFViewerController:
         self._signature_rectangle = None
         self._signature_page_index = None
         self._captured_signature = None
+        self._signature_targets = ()
+        self._selected_signature_target_id = None
+        self._add_signature_box_mode = False
         self._recognized_template = None
         self._pending_manual_rectangle_restore = None
+        self._has_unsaved_signature = False
         self._workflow_status = "Analisi documento..."
         self._view.set_manual_signature_mode(False)
         if self._pdf_provider is None or self._anchor_detector is None:
@@ -367,8 +543,17 @@ class PDFViewerController:
             matches, selected_match, expressions = demo_anchor
             self._anchor_matches = matches
             self._signature_anchor_match = selected_match
-            self._signature_rectangle = self._signature_from_anchor(selected_match)
-            self._signature_page_index = selected_match.page_index
+            signature_rectangle = self._signature_from_anchor(selected_match)
+            self._set_signature_targets(
+                (
+                    SignatureTarget(
+                        target_id="signature-1",
+                        rectangle=signature_rectangle,
+                        page_index=selected_match.page_index,
+                        anchor_match=selected_match,
+                    ),
+                )
+            )
             self._workflow_status = (
                 "Template non riconosciuto | "
                 "Anchor trovato | Zona firma suggerita: puoi ridisegnare il box"
@@ -433,7 +618,6 @@ class PDFViewerController:
             return
 
         self._cancel_wacom_capture()
-        self._captured_signature = None
         page_size = document.page_sizes[self.state.page_index]
         scale_x = page_size.width / image_width
         scale_y = page_size.height / image_height
@@ -442,20 +626,45 @@ class PDFViewerController:
             page_index=self._signature_page_index,
             anchor_match=self._signature_anchor_match,
             workflow_status=self._workflow_status,
+            targets=self._signature_targets,
+            selected_target_id=self._selected_signature_target_id,
         )
-        self._signature_rectangle = Rectangle(
+        rectangle = Rectangle(
             left * scale_x,
             top * scale_y,
             (left + width) * scale_x,
             (top + height) * scale_y,
         )
-        self._signature_page_index = self.state.page_index
+        anchor_match = self._signature_anchor_match
         if (
-            self._signature_anchor_match is not None
-            and self._signature_anchor_match.page_index != self._signature_page_index
+            anchor_match is not None
+            and anchor_match.page_index != self.state.page_index
         ):
-            self._signature_anchor_match = None
-        self._workflow_status = "Rettangolo firma manuale pronto alla firma"
+            anchor_match = None
+        if self._add_signature_box_mode and self._signature_targets:
+            target = SignatureTarget(
+                target_id=self._next_signature_target_id(),
+                rectangle=rectangle,
+                page_index=self.state.page_index,
+                anchor_match=anchor_match,
+            )
+            self._set_signature_targets(
+                (*self._signature_targets, target),
+                selected_target_id=target.target_id,
+            )
+            self._workflow_status = (
+                f"Zona firma {len(self._signature_targets)} aggiunta"
+            )
+        else:
+            target = SignatureTarget(
+                target_id="signature-1",
+                rectangle=rectangle,
+                page_index=self.state.page_index,
+                anchor_match=anchor_match,
+            )
+            self._set_signature_targets((target,), selected_target_id=target.target_id)
+            self._workflow_status = "Rettangolo firma manuale pronto alla firma"
+        self._add_signature_box_mode = False
         self._view.set_manual_signature_mode(False)
         self._logger.info(
             "Manual signature rectangle selected",
@@ -471,7 +680,28 @@ class PDFViewerController:
             self.cancel_manual_template_change,
         )
 
-    def open_signature_dialog(self) -> None:
+    def add_signature_box(self) -> None:
+        if self._confirm_unsaved_signature(self._add_signature_box_now):
+            return
+        self._add_signature_box_now()
+
+    def _add_signature_box_now(self) -> None:
+        if self._pdf_service.current_document is None:
+            self._view.show_error("Apri prima un PDF")
+            return
+        self._cancel_wacom_capture()
+        self._add_signature_box_mode = True
+        self._workflow_status = "Disegna la nuova zona firma sul PDF"
+        self._view.set_manual_signature_mode(True)
+        self._render_current_page()
+
+    def open_signature_dialog(self, target_id: str | None = None) -> None:
+        if target_id is not None and not self._select_signature_target(target_id):
+            self._view.show_error("Zona firma non disponibile")
+            return
+        if target_id is None and len(self._signature_targets) > 1:
+            self._view.show_status("seleziona una zona firma sul PDF")
+            return
         if self._signature_rectangle is None:
             self._view.show_error("Nessun rettangolo firma disponibile")
             return
@@ -490,12 +720,21 @@ class PDFViewerController:
             return
         if self._signature_rectangle is None:
             return
+        if len(self._signature_targets) > 1:
+            self._workflow_status = "Seleziona la zona firma da compilare"
+            self._render_current_page()
+            return
         self._view.defer_signature_capture(self._capture_wacom_signature)
 
     def _capture_wacom_signature(self) -> None:
         if self._signature_provider is None:
             self._view.show_error("Firma Wacom non disponibile")
             return
+        target = self._selected_signature_target()
+        if target is None:
+            self._view.show_error("Nessun rettangolo firma disponibile")
+            return
+        target_id = target.target_id
         self._wacom_capture_generation += 1
         generation = self._wacom_capture_generation
         cancel_event = threading.Event()
@@ -523,7 +762,9 @@ class PDFViewerController:
             if cancel_event.is_set() or generation != self._wacom_capture_generation:
                 self._logger.info("Ignoring cancelled Wacom signature capture")
                 return
-            self._view.run_ui_task(lambda: self.apply_mouse_signature(signature))
+            self._view.run_ui_task(
+                lambda: self.apply_wacom_signature(signature, target_id)
+            )
 
         self._view.run_background_task(capture)
 
@@ -548,8 +789,40 @@ class PDFViewerController:
         self._logger.info("Mouse signature cancelled")
 
     def apply_mouse_signature(self, signature: CapturedSignature) -> None:
-        self._captured_signature = signature
-        self._workflow_status = "Firma acquisita e posizionata nel viewer"
+        target = self._selected_signature_target()
+        self._apply_signature_to_target(
+            signature,
+            target.target_id if target is not None else None,
+            refresh_again=False,
+        )
+
+    def apply_wacom_signature(
+        self, signature: CapturedSignature, target_id: str | None = None
+    ) -> None:
+        self._apply_signature_to_target(signature, target_id, refresh_again=True)
+
+    def _apply_signature_to_target(
+        self,
+        signature: CapturedSignature,
+        target_id: str | None,
+        refresh_again: bool,
+    ) -> None:
+        if target_id is None:
+            self._replace_selected_target_signature(signature)
+        elif not self._replace_target_signature(target_id, signature):
+            self._view.show_error("Zona firma non disponibile")
+            return
+        if self._signature_page_index is not None:
+            self.state.page_index = self._signature_page_index
+        signed_count = sum(
+            1 for target in self._signature_targets if target.signature is not None
+        )
+        if len(self._signature_targets) > 1:
+            self._workflow_status = (
+                f"Firma acquisita ({signed_count}/{len(self._signature_targets)})"
+            )
+        else:
+            self._workflow_status = "Firma acquisita e posizionata nel viewer"
         self._logger.info(
             "Mouse signature confirmed",
             bytes=len(signature.content),
@@ -558,37 +831,54 @@ class PDFViewerController:
         if self._auto_save_signed_documents_enabled():
             self.save_signed_pdf()
             return
+        self._has_unsaved_signature = True
         self._render_current_page()
+        if refresh_again:
+            self._view.defer_viewer_refresh(self._render_current_page)
 
     def save_signed_pdf(self) -> None:
         if self._pdf_service.current_document is None:
             self._view.show_error("Nessun PDF aperto")
             return
-        if self._signature_rectangle is None or self._signature_page_index is None:
+        if not self._signature_targets:
             self._view.show_error("Nessun rettangolo firma disponibile")
             return
-        if self._captured_signature is None:
+        signed_targets = tuple(
+            target for target in self._signature_targets if target.signature is not None
+        )
+        if not signed_targets:
             self._view.show_error("Nessuna firma acquisita")
             return
 
-        area = SignatureArea(
-            page_index=self._signature_page_index,
-            x=self._signature_rectangle.left,
-            y=self._signature_rectangle.top,
-            width=self._signature_rectangle.width,
-            height=self._signature_rectangle.height,
+        signatures = tuple(
+            (
+                target.signature,
+                SignatureArea(
+                    page_index=target.page_index,
+                    x=target.rectangle.left,
+                    y=target.rectangle.top,
+                    width=target.rectangle.width,
+                    height=target.rectangle.height,
+                ),
+            )
+            for target in signed_targets
+            if target.signature is not None
         )
         try:
-            destination = self._pdf_service.save_signed_preview(
-                self._captured_signature,
-                area,
-            )
+            if len(signatures) == 1:
+                destination = self._pdf_service.save_signed_preview(
+                    signatures[0][0],
+                    signatures[0][1],
+                )
+            else:
+                destination = self._pdf_service.save_signed_previews(signatures)
         except Exception as error:
             self._logger.exception("Unable to save signed PDF preview")
             self._view.show_error(str(error))
             return
 
         self._workflow_status = f"PDF firmato salvato: {destination}"
+        self._has_unsaved_signature = False
         self._logger.info("Signed PDF saved", destination=str(destination))
         if self._pdf_service.current_document is not None:
             self._pdf_service.close_document()
@@ -599,6 +889,9 @@ class PDFViewerController:
         self._signature_rectangle = None
         self._signature_page_index = None
         self._captured_signature = None
+        self._signature_targets = ()
+        self._selected_signature_target_id = None
+        self._add_signature_box_mode = False
         self._recognized_template = None
         self._pending_manual_rectangle_restore = None
         self._view.set_manual_signature_mode(False)
@@ -623,7 +916,7 @@ class PDFViewerController:
         )
 
     def save_manual_template(self) -> None:
-        if self._canonical_document is None or self._signature_rectangle is None:
+        if self._canonical_document is None or not self._signature_targets:
             self._view.show_error("Nessun modello manuale da salvare")
             return
 
@@ -663,7 +956,11 @@ class PDFViewerController:
         self._pending_manual_rectangle_restore = None
         self._logger.info("Manual template saved", path=str(template_path))
         self._render_current_page()
-        self._open_wacom_signature_when_ready()
+        if len(self._signature_targets) == 1:
+            self._open_wacom_signature_when_ready()
+        else:
+            self._workflow_status = "Seleziona la zona firma da compilare"
+            self._render_current_page()
 
     def cancel_manual_template_change(self) -> None:
         snapshot = self._pending_manual_rectangle_restore
@@ -673,9 +970,15 @@ class PDFViewerController:
             self._open_wacom_signature_when_ready()
             return
 
-        self._signature_rectangle = snapshot.rectangle
-        self._signature_page_index = snapshot.page_index
-        self._signature_anchor_match = snapshot.anchor_match
+        if snapshot.targets:
+            self._set_signature_targets(
+                snapshot.targets,
+                selected_target_id=snapshot.selected_target_id,
+            )
+        else:
+            self._signature_rectangle = snapshot.rectangle
+            self._signature_page_index = snapshot.page_index
+            self._signature_anchor_match = snapshot.anchor_match
         self._workflow_status = snapshot.workflow_status
         self._view.set_manual_signature_mode(True)
         if self._signature_page_index is not None:
@@ -698,28 +1001,11 @@ class PDFViewerController:
         page_size = document.page_sizes[self.state.page_index]
         scale_x = image_width / page_size.width
         scale_y = image_height / page_size.height
-        if (
-            self._signature_rectangle is not None
-            and self._signature_page_index == self.state.page_index
-        ):
-            return (
-                AnchorOverlay(
-                    left=self._signature_rectangle.left * scale_x,
-                    top=self._signature_rectangle.top * scale_y,
-                    width=self._signature_rectangle.width * scale_x,
-                    height=self._signature_rectangle.height * scale_y,
-                    label="Zona firma",
-                    signature_content=(
-                        self._captured_signature.content
-                        if self._captured_signature is not None
-                        else None
-                    ),
-                    signature_media_type=(
-                        self._captured_signature.media_type
-                        if self._captured_signature is not None
-                        else "image/svg+xml"
-                    ),
-                ),
+        if self._signature_targets:
+            return tuple(
+                self._signature_target_overlay(target, scale_x, scale_y)
+                for target in self._signature_targets
+                if target.page_index == self.state.page_index
             )
         if self._signature_rectangle is not None:
             return ()
@@ -727,6 +1013,32 @@ class PDFViewerController:
             self._anchor_overlay_from_match(match, scale_x, scale_y)
             for match in self._anchor_matches
             if match.page_index == self.state.page_index
+        )
+
+    def _signature_target_overlay(
+        self, target: SignatureTarget, scale_x: float, scale_y: float
+    ) -> AnchorOverlay:
+        index = self._target_display_index(target)
+        label = (
+            "Zona firma"
+            if len(self._signature_targets) == 1
+            else f"Zona firma {index}"
+        )
+        return AnchorOverlay(
+            left=target.rectangle.left * scale_x,
+            top=target.rectangle.top * scale_y,
+            width=target.rectangle.width * scale_x,
+            height=target.rectangle.height * scale_y,
+            label=label,
+            signature_content=(
+                target.signature.content if target.signature is not None else None
+            ),
+            signature_media_type=(
+                target.signature.media_type
+                if target.signature is not None
+                else "image/svg+xml"
+            ),
+            target_id=target.target_id,
         )
 
     def _anchor_overlay_from_match(
@@ -960,6 +1272,7 @@ class PDFViewerController:
         return final_score
 
     def _apply_template_anchor(self, document: Document, template: Template) -> bool:
+        targets: list[SignatureTarget] = []
         for anchor_rule in template.anchor_rules:
             if (
                 template.document_type == "manual_signature_flow"
@@ -981,17 +1294,32 @@ class PDFViewerController:
                     )
                     if match is None:
                         continue
-                    self._anchor_matches = result.matches
-                    self._signature_anchor_match = match
-                    self._signature_rectangle = self._signature_from_template_anchor(
-                        match, placement
+                    targets.append(
+                        SignatureTarget(
+                            target_id=placement.placement_id,
+                            rectangle=self._signature_from_template_anchor(
+                                match, placement
+                            ),
+                            page_index=match.page_index,
+                            anchor_match=match,
+                            role=placement.role,
+                        )
                     )
-                    self._signature_page_index = match.page_index
-                    return True
+                    self._anchor_matches = result.matches
+        if targets:
+            self._set_signature_targets(tuple(targets))
+            return True
 
         if (
             template.document_type == "manual_signature_flow"
             and template.anchor_rules
+            and self._apply_manual_fallback_placement(template)
+        ):
+            return True
+
+        if (
+            template.document_type == "manual_signature_flow"
+            and _manual_placement_count(template) > 1
             and self._apply_manual_fallback_placement(template)
         ):
             return True
@@ -1002,25 +1330,42 @@ class PDFViewerController:
                 matches, selected_match, _ = demo_anchor
                 self._anchor_matches = matches
                 self._signature_anchor_match = selected_match
-                self._signature_rectangle = self._signature_from_anchor(selected_match)
-                self._signature_page_index = selected_match.page_index
+                self._set_signature_targets(
+                    (
+                        SignatureTarget(
+                            target_id="signature-1",
+                            rectangle=self._signature_from_anchor(selected_match),
+                            page_index=selected_match.page_index,
+                            anchor_match=selected_match,
+                        ),
+                    )
+                )
                 return True
 
         return self._apply_manual_fallback_placement(template)
 
     def _apply_manual_fallback_placement(self, template: Template) -> bool:
+        targets: list[SignatureTarget] = []
         for placement in template.placement_rules:
             if placement.side == "manual":
-                self._signature_rectangle = Rectangle(
-                    placement.x_offset,
-                    placement.y_offset,
-                    placement.x_offset + placement.width,
-                    placement.y_offset + placement.height,
+                targets.append(
+                    SignatureTarget(
+                        target_id=placement.placement_id,
+                        rectangle=Rectangle(
+                            placement.x_offset,
+                            placement.y_offset,
+                            placement.x_offset + placement.width,
+                            placement.y_offset + placement.height,
+                        ),
+                        page_index=placement.page_index or 0,
+                        role=placement.role,
+                    )
                 )
-                self._signature_page_index = placement.page_index or 0
-                self._anchor_matches = ()
-                self._signature_anchor_match = None
-                return True
+        if targets:
+            self._anchor_matches = ()
+            self._signature_anchor_match = None
+            self._set_signature_targets(tuple(targets))
+            return True
         return False
 
     def _template_anchor_match_for_placement(
@@ -1056,6 +1401,11 @@ class PDFViewerController:
     def _manual_template_placement_rules(
         self, document: Document
     ) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+        if len(self._signature_targets) > 1:
+            return None, [
+                self._manual_fallback_placement_rule_for_target(target, index)
+                for index, target in enumerate(self._signature_targets)
+            ]
         fallback = self._manual_fallback_placement_rule()
         anchor = self._manual_selected_anchor_reference()
         if anchor is None:
@@ -1105,6 +1455,13 @@ class PDFViewerController:
 
     def _manual_fallback_placement_rule(self) -> dict[str, object]:
         assert self._signature_rectangle is not None
+        target = self._selected_signature_target()
+        if target is not None:
+            try:
+                index = self._signature_targets.index(target)
+            except ValueError:
+                index = 0
+            return self._manual_fallback_placement_rule_for_target(target, index)
         return {
             "placement_id": "manual-signature",
             "role": "signer",
@@ -1116,6 +1473,25 @@ class PDFViewerController:
             "width": self._signature_rectangle.width,
             "height": self._signature_rectangle.height,
             "page_index": self._signature_page_index,
+            "required": True,
+        }
+
+    def _manual_fallback_placement_rule_for_target(
+        self, target: SignatureTarget, index: int
+    ) -> dict[str, object]:
+        return {
+            "placement_id": (
+                "manual-signature" if index == 0 else f"manual-signature-{index + 1}"
+            ),
+            "role": target.role,
+            "anchor_id": "manual",
+            "side": "manual",
+            "alignment": "manual",
+            "x_offset": target.rectangle.left,
+            "y_offset": target.rectangle.top,
+            "width": target.rectangle.width,
+            "height": target.rectangle.height,
+            "page_index": target.page_index,
             "required": True,
         }
 
@@ -1273,8 +1649,20 @@ def _normalize(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
-def _template_rank(template: Template) -> tuple[int, int, str]:
-    return template.priority, _template_timestamp(template.template_id), template.template_id
+def _template_rank(template: Template) -> tuple[int, int, int, str]:
+    return (
+        template.priority,
+        1 if _is_learned_template(template) else 0,
+        _template_timestamp(template.template_id),
+        template.template_id,
+    )
+
+
+def _is_learned_template(template: Template) -> bool:
+    return (
+        template.document_type == "manual_signature_flow"
+        and template.template_id.startswith("learned_")
+    )
 
 
 def _template_timestamp(template_id: str) -> int:
@@ -1294,6 +1682,10 @@ def _has_visual_recognition_rule(template: Template) -> bool:
         rule.rule_id == "manual-visual-signature"
         for rule in template.recognition_rules
     )
+
+
+def _manual_placement_count(template: Template) -> int:
+    return sum(1 for placement in template.placement_rules if placement.side == "manual")
 
 
 def _visual_signature(document: Document) -> str:

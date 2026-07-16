@@ -49,6 +49,9 @@ class FakePDFRenderer(PDFRenderer):
 class FakeSignatureWriter(VisiblePDFSignatureWriter):
     def __init__(self) -> None:
         self.calls: list[tuple[Path, Path, CapturedSignature, SignatureArea]] = []
+        self.multi_calls: list[
+            tuple[Path, Path, tuple[tuple[CapturedSignature, SignatureArea], ...]]
+        ] = []
 
     def save_with_visible_signature(
         self,
@@ -58,6 +61,26 @@ class FakeSignatureWriter(VisiblePDFSignatureWriter):
         area: SignatureArea,
     ) -> None:
         self.calls.append((source, destination, signature, area))
+
+    def save_with_visible_signatures(
+        self,
+        source: Path,
+        destination: Path,
+        signatures: tuple[tuple[CapturedSignature, SignatureArea], ...],
+    ) -> None:
+        self.multi_calls.append((source, destination, tuple(signatures)))
+
+
+class FailingSignatureWriter(FakeSignatureWriter):
+    def save_with_visible_signature(
+        self,
+        source: Path,
+        destination: Path,
+        signature: CapturedSignature,
+        area: SignatureArea,
+    ) -> None:
+        self.calls.append((source, destination, signature, area))
+        raise RuntimeError("signing failed")
 
 
 class PDFServiceTests(unittest.TestCase):
@@ -162,6 +185,148 @@ class PDFServiceTests(unittest.TestCase):
                 CapturedSignature(content=b"svg", media_type="image/svg+xml"),
                 SignatureArea(page_index=0, x=0, y=0, width=10, height=10),
             )
+
+    def test_save_signed_previews_uses_injected_signature_writer(self) -> None:
+        writer = FakeSignatureWriter()
+        service = PDFService(
+            backend=self.backend,
+            signature_writer=writer,
+            logger=LoggingService.create("qsign.tests"),
+        )
+        service.open_document(self.source)
+        first_signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        second_signature = CapturedSignature(
+            content=b"<svg><polyline points='3,3 4,4'/></svg>",
+            media_type="image/svg+xml",
+        )
+        signatures = (
+            (
+                first_signature,
+                SignatureArea(page_index=0, x=10, y=20, width=90, height=40),
+            ),
+            (
+                second_signature,
+                SignatureArea(page_index=0, x=30, y=60, width=70, height=35),
+            ),
+        )
+        destination = Path(self.temporary_directory.name) / "signed.pdf"
+
+        saved_path = service.save_signed_previews(signatures, destination)
+
+        self.assertEqual(saved_path, destination)
+        self.assertEqual(writer.multi_calls, [(self.source, destination, signatures)])
+
+    def test_two_consecutive_signatures_of_same_pdf_use_distinct_paths(self) -> None:
+        writer = FakeSignatureWriter()
+        signed_directory = Path(self.temporary_directory.name) / "signed"
+        service = PDFService(
+            backend=self.backend,
+            signature_writer=writer,
+            signed_output_directory=signed_directory,
+            logger=LoggingService.create("qsign.tests"),
+        )
+        service.open_document(self.source)
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        area = SignatureArea(page_index=0, x=0, y=0, width=10, height=10)
+
+        first = service.save_signed_preview(signature, area)
+        second = service.save_signed_preview(signature, area)
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.parent, signed_directory)
+        self.assertEqual(second.parent, signed_directory)
+        self.assertTrue(first.name.startswith("sample_signed_"))
+        self.assertTrue(second.name.startswith("sample_signed_"))
+        self.assertEqual(writer.calls[0][1], first)
+        self.assertEqual(writer.calls[1][1], second)
+
+    def test_same_filename_from_different_directories_use_distinct_paths(self) -> None:
+        writer = FakeSignatureWriter()
+        signed_directory = Path(self.temporary_directory.name) / "signed"
+        service = PDFService(
+            backend=self.backend,
+            signature_writer=writer,
+            signed_output_directory=signed_directory,
+            logger=LoggingService.create("qsign.tests"),
+        )
+        first_source = Path(self.temporary_directory.name) / "first" / "sample.pdf"
+        second_source = Path(self.temporary_directory.name) / "second" / "sample.pdf"
+        first_source.parent.mkdir()
+        second_source.parent.mkdir()
+        first_source.write_bytes(b"%PDF-first")
+        second_source.write_bytes(b"%PDF-second")
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        area = SignatureArea(page_index=0, x=0, y=0, width=10, height=10)
+
+        service.open_document(first_source)
+        first = service.save_signed_preview(signature, area)
+        service.open_document(second_source)
+        second = service.save_signed_preview(signature, area)
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.parent, signed_directory)
+        self.assertEqual(second.parent, signed_directory)
+        self.assertTrue(first.name.startswith("sample_signed_"))
+        self.assertTrue(second.name.startswith("sample_signed_"))
+
+    def test_save_signed_preview_rejects_existing_explicit_destination(self) -> None:
+        writer = FakeSignatureWriter()
+        service = PDFService(
+            backend=self.backend,
+            signature_writer=writer,
+            logger=LoggingService.create("qsign.tests"),
+        )
+        service.open_document(self.source)
+        destination = Path(self.temporary_directory.name) / "existing.pdf"
+        destination.write_bytes(b"%PDF-existing")
+
+        with self.assertRaises(FileExistsError):
+            service.save_signed_preview(
+                CapturedSignature(
+                    content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                    media_type="image/svg+xml",
+                ),
+                SignatureArea(page_index=0, x=0, y=0, width=10, height=10),
+                destination,
+            )
+
+        self.assertEqual(destination.read_bytes(), b"%PDF-existing")
+        self.assertEqual(writer.calls, [])
+
+    def test_signing_error_does_not_remove_previous_signed_file(self) -> None:
+        writer = FailingSignatureWriter()
+        signed_directory = Path(self.temporary_directory.name) / "signed"
+        previous = signed_directory / "sample_signed_previous.pdf"
+        signed_directory.mkdir()
+        previous.write_bytes(b"%PDF-previous")
+        service = PDFService(
+            backend=self.backend,
+            signature_writer=writer,
+            signed_output_directory=signed_directory,
+            logger=LoggingService.create("qsign.tests"),
+        )
+        service.open_document(self.source)
+
+        with self.assertRaisesRegex(RuntimeError, "signing failed"):
+            service.save_signed_preview(
+                CapturedSignature(
+                    content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                    media_type="image/svg+xml",
+                ),
+                SignatureArea(page_index=0, x=0, y=0, width=10, height=10),
+            )
+
+        self.assertEqual(previous.read_bytes(), b"%PDF-previous")
+        self.assertFalse(writer.calls[0][1].exists())
 
 
 if __name__ == "__main__":

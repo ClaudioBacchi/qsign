@@ -8,9 +8,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.services.general_preferences_service import (
+    ErpDocument,
+    ErpDocumentsResult,
     ErpUser,
     ErpUserSettings,
     ErpUsersResult,
+    GeneralPreferencesServiceError,
     GeneralPreferencesService,
     SupabaseConnectionResult,
     SupabaseSettings,
@@ -21,9 +24,13 @@ from app.services.general_preferences_service import (
 class FakeLogger:
     def __init__(self) -> None:
         self.entries: list[tuple[str, dict[str, object]]] = []
+        self.warnings: list[tuple[str, dict[str, object]]] = []
 
     def info(self, message: str, **context: object) -> None:
         self.entries.append((message, context))
+
+    def warning(self, message: str, **context: object) -> None:
+        self.warnings.append((message, context))
 
 
 class GeneralPreferencesServiceTests(unittest.TestCase):
@@ -53,6 +60,8 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                     table_name="SaluteLavoro",
                     auto_sync_templates_on_startup=True,
                     auto_save_signed_documents=True,
+                    auto_refresh_erp_documents=True,
+                    erp_refresh_interval_seconds=45,
                     show_signature_text=True,
                     signature_capture_mode="wacom",
                 )
@@ -75,6 +84,8 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                     table_name="SaluteLavoro",
                     auto_sync_templates_on_startup=True,
                     auto_save_signed_documents=True,
+                    auto_refresh_erp_documents=True,
+                    erp_refresh_interval_seconds=45,
                     show_signature_text=True,
                     signature_capture_mode="wacom",
                 ),
@@ -105,6 +116,215 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             self.assertFalse(payload["general"]["show_signature_text"])
             self.assertFalse(service.get_supabase_settings().show_signature_text)
 
+    def test_preferences_write_is_atomic_and_creates_backup_from_valid_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            preferences.write_text(
+                json.dumps({"active_certificate_thumbprint": "AA BB"}),
+                encoding="utf-8",
+            )
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            service.save_supabase_settings(
+                SupabaseSettings(project_url="https://demo.supabase.co")
+            )
+
+            payload = json.loads(preferences.read_text(encoding="utf-8"))
+            backup = json.loads(preferences.with_name("preferences.json.bak").read_text(encoding="utf-8"))
+            self.assertIn("general", payload)
+            self.assertEqual(backup, {"active_certificate_thumbprint": "AA BB"})
+            self.assertEqual(list(Path(directory).glob("*.tmp")), [])
+
+    def test_first_preferences_write_does_not_create_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            service.save_supabase_settings(
+                SupabaseSettings(project_url="https://demo.supabase.co")
+            )
+
+            self.assertTrue(preferences.is_file())
+            self.assertFalse(preferences.with_name("preferences.json.bak").exists())
+
+    def test_preferences_write_error_before_replace_keeps_previous_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            previous = {"active_certificate_thumbprint": "AA BB"}
+            preferences.write_text(json.dumps(previous), encoding="utf-8")
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            def fail_backup() -> None:
+                raise OSError("backup failed")
+
+            service._copy_valid_preferences_to_backup = fail_backup
+
+            with self.assertRaises(OSError):
+                service.save_supabase_settings(
+                    SupabaseSettings(project_url="https://demo.supabase.co")
+                )
+
+            self.assertEqual(json.loads(preferences.read_text(encoding="utf-8")), previous)
+            self.assertEqual(list(Path(directory).glob("*.tmp")), [])
+
+    def test_preferences_replace_error_cleans_temporary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            previous = {"active_certificate_thumbprint": "AA BB"}
+            preferences.write_text(json.dumps(previous), encoding="utf-8")
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            def fail_replace(source: Path, destination: Path) -> None:
+                raise OSError("replace failed")
+
+            service._replace_preferences_file = fail_replace
+
+            with self.assertRaises(OSError):
+                service.save_supabase_settings(
+                    SupabaseSettings(project_url="https://demo.supabase.co")
+                )
+
+            self.assertEqual(json.loads(preferences.read_text(encoding="utf-8")), previous)
+            self.assertEqual(list(Path(directory).glob("*.tmp")), [])
+
+    def test_corrupt_preferences_fall_back_to_valid_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logger = FakeLogger()
+            preferences = Path(directory) / "preferences.json"
+            preferences.write_text("{broken", encoding="utf-8")
+            preferences.with_name("preferences.json.bak").write_text(
+                json.dumps(
+                    {
+                        "general": {
+                            "supabase_table": "Meddoc",
+                            "supabase_url": {
+                                "protected_with": "plain-internal-test",
+                                "value": "https://demo.supabase.co",
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                logger=logger,
+            )
+
+            settings = service.get_supabase_settings()
+
+            self.assertEqual(settings.project_url, "https://demo.supabase.co")
+            self.assertEqual(settings.table_name, "Meddoc")
+            self.assertTrue(logger.warnings)
+            self.assertNotIn("https://demo.supabase.co", str(logger.warnings))
+
+    def test_corrupt_preferences_and_backup_return_defaults_with_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logger = FakeLogger()
+            preferences = Path(directory) / "preferences.json"
+            preferences.write_text("{broken", encoding="utf-8")
+            preferences.with_name("preferences.json.bak").write_text("{also-broken", encoding="utf-8")
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                logger=logger,
+            )
+
+            settings = service.get_supabase_settings()
+
+            self.assertEqual(settings, SupabaseSettings())
+            self.assertTrue(logger.warnings)
+
+    def test_dpapi_error_is_diagnostic_without_exposing_encrypted_value(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logger = FakeLogger()
+            preferences = Path(directory) / "preferences.json"
+            preferences.write_text(
+                json.dumps(
+                    {
+                        "general": {
+                            "supabase_url": {
+                                "protected_with": "windows-dpapi-current-user",
+                                "value": "encrypted-secret-value",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                unprotect=lambda _: (_ for _ in ()).throw(
+                    GeneralPreferencesServiceError("dpapi failed")
+                ),
+                logger=logger,
+            )
+
+            self.assertEqual(service.get_supabase_settings().project_url, "")
+            self.assertTrue(logger.warnings)
+            self.assertNotIn("encrypted-secret-value", str(logger.warnings))
+
+    def test_erp_and_admin_preferences_survive_atomic_save_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            service.set_admin_password("admin-secret")
+            service.save_erp_user_settings(
+                ErpUserSettings(
+                    users_url="https://erp.example.test/users",
+                    documents_url="https://erp.example.test/documents",
+                    document_service_url="https://erp.example.test/soap",
+                    company_id="SALAV",
+                    basic_username="api-user",
+                    basic_password="api-secret",
+                    selected_user_id="42",
+                    selected_user_name="Mario Rossi",
+                    persistent_user=True,
+                )
+            )
+
+            reloaded = GeneralPreferencesService(
+                preferences_path=preferences,
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            self.assertTrue(reloaded.verify_admin_password("admin-secret"))
+            self.assertEqual(
+                reloaded.get_erp_user_settings(),
+                ErpUserSettings(
+                    users_url="https://erp.example.test/users",
+                    documents_url="https://erp.example.test/documents",
+                    document_service_url="https://erp.example.test/soap",
+                    company_id="SALAV",
+                    basic_username="api-user",
+                    basic_password="api-secret",
+                    selected_user_id="42",
+                    selected_user_name="Mario Rossi",
+                    persistent_user=True,
+                ),
+            )
+
     def test_general_preferences_save_is_logged_without_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logger = FakeLogger()
@@ -122,6 +342,8 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                     table_name="Meddoc",
                     auto_sync_templates_on_startup=True,
                     auto_save_signed_documents=True,
+                    auto_refresh_erp_documents=True,
+                    erp_refresh_interval_seconds=10,
                     show_signature_text=True,
                     signature_capture_mode="wacom",
                 )
@@ -132,9 +354,13 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             self.assertEqual(context["table_name"], "Meddoc")
             self.assertTrue(context["auto_save_signed_documents"])
             self.assertTrue(context["auto_sync_templates_on_startup"])
+            self.assertTrue(context["auto_refresh_erp_documents"])
+            self.assertEqual(context["erp_refresh_interval_seconds"], 30)
             self.assertTrue(context["show_signature_text"])
             self.assertEqual(context["signature_capture_mode"], "wacom")
             self.assertIn("auto_save_signed_documents", context["changed_fields"])
+            self.assertIn("auto_refresh_erp_documents", context["changed_fields"])
+            self.assertIn("erp_refresh_interval_seconds", context["changed_fields"])
             self.assertIn("signature_capture_mode", context["changed_fields"])
             self.assertNotIn("https://demo.supabase.co", str(context))
             self.assertNotIn("secret", str(context))
@@ -152,19 +378,28 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             service.save_erp_user_settings(
                 ErpUserSettings(
                     users_url="https://erp.example.test/users",
+                    documents_url="https://erp.example.test/documents",
+                    document_service_url="https://erp.example.test/soap",
+                    company_id="SALAV",
                     basic_username="api-user",
                     basic_password="api-secret",
                     selected_user_id="42",
                     selected_user_name="Mario Rossi",
+                    persistent_user=True,
                 )
             )
 
             self.assertEqual(logger.entries[0][0], "ERP user preferences saved")
             context = logger.entries[0][1]
             self.assertTrue(context["users_url_configured"])
+            self.assertTrue(context["document_service_url_configured"])
+            self.assertTrue(context["company_id_configured"])
             self.assertTrue(context["basic_password_configured"])
             self.assertEqual(context["selected_user_id"], "42")
+            self.assertTrue(context["persistent_user"])
+            self.assertTrue(context["persistent_user_changed"])
             self.assertNotIn("https://erp.example.test/users", str(context))
+            self.assertNotIn("https://erp.example.test/soap", str(context))
             self.assertNotIn("api-secret", str(context))
 
     def test_erp_user_session_selection_is_logged(self) -> None:
@@ -355,11 +590,17 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                 preferences_path=preferences,
                 protect=lambda value: {
                     "https://erp.example.test/users": "encrypted-url",
+                    "https://erp.example.test/documents": "encrypted-documents-url",
+                    "https://erp.example.test/soap": "encrypted-soap-url",
+                    "SALAV": "encrypted-company-id",
                     "api-user": "encrypted-user",
                     "api-secret": "encrypted-password",
                 }[value],
                 unprotect=lambda value: {
                     "encrypted-url": "https://erp.example.test/users",
+                    "encrypted-documents-url": "https://erp.example.test/documents",
+                    "encrypted-soap-url": "https://erp.example.test/soap",
+                    "encrypted-company-id": "SALAV",
                     "encrypted-user": "api-user",
                     "encrypted-password": "api-secret",
                 }[value],
@@ -368,10 +609,14 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             service.save_erp_user_settings(
                 ErpUserSettings(
                     users_url="https://erp.example.test/users",
+                    documents_url="https://erp.example.test/documents",
+                    document_service_url="https://erp.example.test/soap",
+                    company_id="SALAV",
                     basic_username="api-user",
                     basic_password="api-secret",
                     selected_user_id="42",
                     selected_user_name="Mario Rossi",
+                    persistent_user=True,
                 )
             )
 
@@ -379,17 +624,63 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             payload = json.loads(content)
             self.assertEqual(payload["active_certificate_thumbprint"], "AA BB")
             self.assertNotIn("https://erp.example.test/users", content)
+            self.assertNotIn("https://erp.example.test/documents", content)
+            self.assertNotIn("https://erp.example.test/soap", content)
             self.assertNotIn("api-secret", content)
             self.assertEqual(
                 service.get_erp_user_settings(),
                 ErpUserSettings(
                     users_url="https://erp.example.test/users",
+                    documents_url="https://erp.example.test/documents",
+                    document_service_url="https://erp.example.test/soap",
+                    company_id="SALAV",
                     basic_username="api-user",
                     basic_password="api-secret",
                     selected_user_id="42",
                     selected_user_name="Mario Rossi",
+                    persistent_user=True,
                 ),
             )
+
+    def test_erp_document_url_must_be_https_when_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service = GeneralPreferencesService(
+                preferences_path=Path(directory) / "preferences.json",
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            with self.assertRaises(GeneralPreferencesServiceError):
+                service.save_erp_user_settings(
+                    ErpUserSettings(
+                        documents_url="http://erp.example.test/documents",
+                    )
+                )
+            with self.assertRaisesRegex(
+                GeneralPreferencesServiceError,
+                "URL servizio documentale SOAP non valido",
+            ):
+                service.save_erp_user_settings(
+                    ErpUserSettings(
+                        document_service_url="http://erp.example.test/soap",
+                    )
+                )
+
+    def test_erp_users_url_must_be_https_when_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service = GeneralPreferencesService(
+                preferences_path=Path(directory) / "preferences.json",
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            with self.assertRaisesRegex(
+                GeneralPreferencesServiceError,
+                "URL utenti ERP non valido",
+            ):
+                service.save_erp_user_settings(
+                    ErpUserSettings(users_url="http://erp.example.test/users")
+                )
 
     def test_plain_internal_test_preferences_are_read_for_migration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -433,6 +724,7 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                 service.get_erp_user_settings(),
                 ErpUserSettings(
                     users_url="https://erp.example.test/users",
+                    documents_url="",
                     basic_username="api-user",
                     basic_password="api-secret",
                 ),
@@ -492,6 +784,206 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             "Basic YXBpLXVzZXI6YXBpLXNlY3JldA==",
         )
         self.assertEqual(requests[0][1], 8)
+
+    def test_erp_users_http_url_is_rejected_before_basic_auth(self) -> None:
+        requests = []
+
+        def opener(request, *, timeout):
+            requests.append((request, timeout))
+            return SimpleNamespace(status=200, read=lambda: b'{"users":[]}')
+
+        service = GeneralPreferencesService(opener=opener)
+
+        result = service.fetch_erp_users(
+            ErpUserSettings(
+                users_url="http://erp.example.test/users",
+                basic_username="api-user",
+                basic_password="api-secret",
+            )
+        )
+
+        self.assertEqual(result, ErpUsersResult(False, "URL utenti ERP non valido"))
+        self.assertEqual(requests, [])
+
+    def test_erp_documents_are_loaded_with_selected_user_and_basic_auth(self) -> None:
+        requests = []
+
+        def opener(request, *, timeout):
+            requests.append((request, timeout))
+            body = (
+                b'{"data":['
+                b'{"vfname":"NOME_DOCUMENTO.pdf","vfdescri":"Visita",'
+                b'"vfcheckoutdate":"2026-07-16 09:29:57","vfcheckoutby":"20",'
+                b'"vfcodiceid":"DOC-1","vfauthcode":"secret",'
+                b'"vfphysicname":"hidden.pdf"},'
+                b'{"vfname":"ALTRO.pdf","vfcheckoutby":"21"}'
+                b"]}"
+            )
+            return SimpleNamespace(status=200, read=lambda: body)
+
+        service = GeneralPreferencesService(opener=opener)
+
+        result = service.fetch_erp_documents(
+            ErpUserSettings(
+                documents_url="https://erp.example.test/documents",
+                basic_username="api-user",
+                basic_password="api-secret",
+                selected_user_id="20",
+            )
+        )
+
+        self.assertEqual(
+            result,
+            ErpDocumentsResult(
+                True,
+                "Caricati 1 documenti",
+                (
+                    ErpDocument(
+                        "NOME_DOCUMENTO.pdf",
+                        "2026-07-16 09:29:57",
+                        "Visita",
+                        "DOC-1",
+                        "secret",
+                        "20",
+                    ),
+                ),
+            ),
+        )
+        self.assertEqual(
+            requests[0][0].full_url,
+            "https://erp.example.test/documents?pVFCHECKOUTBY=20",
+        )
+        self.assertEqual(requests[0][0].headers["Accept"], "application/json")
+        self.assertEqual(
+            requests[0][0].headers["Authorization"],
+            "Basic YXBpLXVzZXI6YXBpLXNlY3JldA==",
+        )
+        self.assertEqual(requests[0][1], 8)
+
+    def test_erp_documents_are_not_loaded_without_url_or_user(self) -> None:
+        requests = []
+
+        def opener(request, *, timeout):
+            requests.append(request)
+            return SimpleNamespace(status=200, read=lambda: b'{"data":[]}')
+
+        service = GeneralPreferencesService(opener=opener)
+
+        without_url = service.fetch_erp_documents(
+            ErpUserSettings(selected_user_id="20")
+        )
+        without_user = service.fetch_erp_documents(
+            ErpUserSettings(documents_url="https://erp.example.test/documents")
+        )
+
+        self.assertTrue(without_url.success)
+        self.assertTrue(without_user.success)
+        self.assertEqual(requests, [])
+
+    def test_erp_documents_require_https(self) -> None:
+        service = GeneralPreferencesService()
+        invalid_url = service.fetch_erp_documents(
+            ErpUserSettings(
+                documents_url="http://erp.example.test/documents",
+                basic_username="api-user",
+                basic_password="api-secret",
+                selected_user_id="20",
+            )
+        )
+
+        self.assertEqual(
+            invalid_url,
+            ErpDocumentsResult(False, "URL query documenti ERP non valido"),
+        )
+
+    def test_erp_documents_empty_data_is_valid_empty_list(self) -> None:
+        service = GeneralPreferencesService(
+            opener=lambda request, *, timeout: SimpleNamespace(
+                status=200,
+                read=lambda: b'{"data":[]}',
+            )
+        )
+
+        result = service.fetch_erp_documents(
+            ErpUserSettings(
+                documents_url="https://erp.example.test/documents",
+                basic_username="api-user",
+                basic_password="api-secret",
+                selected_user_id="20",
+            )
+        )
+
+        self.assertEqual(
+            result,
+            ErpDocumentsResult(True, "Nessun documento da firmare", ()),
+        )
+
+    def test_erp_documents_reject_invalid_json_schema(self) -> None:
+        for body in (b"{}", b'{"data":{}}', b"[]"):
+            calls = []
+
+            def opener(request, *, timeout, response_body=body):
+                calls.append(request)
+                return SimpleNamespace(status=200, read=lambda: response_body)
+
+            service = GeneralPreferencesService(opener=opener)
+
+            result = service.fetch_erp_documents(
+                ErpUserSettings(
+                    documents_url="https://erp.example.test/documents",
+                    basic_username="api-user",
+                    basic_password="api-secret",
+                    selected_user_id="20",
+                )
+            )
+
+            self.assertEqual(
+                result,
+                ErpDocumentsResult(False, "Risposta ERP documenti non valida"),
+            )
+            self.assertEqual(len(calls), 1)
+
+    def test_erp_documents_reject_syntactically_invalid_json(self) -> None:
+        service = GeneralPreferencesService(
+            opener=lambda request, *, timeout: SimpleNamespace(
+                status=200,
+                read=lambda: b"{not-json",
+            )
+        )
+
+        result = service.fetch_erp_documents(
+            ErpUserSettings(
+                documents_url="https://erp.example.test/documents",
+                basic_username="api-user",
+                basic_password="api-secret",
+                selected_user_id="20",
+            )
+        )
+
+        self.assertEqual(
+            result,
+            ErpDocumentsResult(False, "Risposta ERP non in formato JSON"),
+        )
+
+    def test_erp_documents_network_error_is_controlled(self) -> None:
+        def opener(request, *, timeout):
+            raise OSError("boom secret-token")
+
+        service = GeneralPreferencesService(opener=opener)
+
+        result = service.fetch_erp_documents(
+            ErpUserSettings(
+                documents_url="https://erp.example.test/documents",
+                basic_username="api-user",
+                basic_password="api-secret",
+                selected_user_id="20",
+            )
+        )
+
+        self.assertEqual(
+            result,
+            ErpDocumentsResult(False, "Connessione ERP documenti fallita"),
+        )
 
 
 if __name__ == "__main__":

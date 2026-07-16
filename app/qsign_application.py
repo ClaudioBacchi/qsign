@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from app.pdf_viewer_controller import PDFViewerController
 from app.services.certificate_service import CertificateService
 from app.services.general_preferences_service import GeneralPreferencesService
+from app.services.infinity_dms_client import InfinityDmsClient
 from services.anchors.anchor_detector import AnchorDetector
 from services.logging.logging_service import LoggingService
 from services.pdf.pdf_service import PDFService
@@ -53,6 +54,7 @@ class QSignApplication:
         template_repository = FilesystemTemplateRepository("templates")
         certificate_service = CertificateService()
         general_preferences_service = GeneralPreferencesService(logger=self._logger)
+        infinity_dms_client = InfinityDmsClient(logger=self._logger)
         template_sync_service = SupabaseTemplateSyncService(
             preferences_service=general_preferences_service,
             template_root="templates",
@@ -80,6 +82,7 @@ class QSignApplication:
             certificate_service=certificate_service,
             general_preferences_service=general_preferences_service,
             template_sync_service=template_sync_service,
+            infinity_dms_client=infinity_dms_client,
         )
         controller = PDFViewerController(
             pdf_service=pdf_service,
@@ -100,6 +103,7 @@ class QSignApplication:
             on_zoom_out=controller.zoom_out,
             on_save_signed_pdf=controller.save_signed_pdf,
             on_manual_signature_rect=controller.set_manual_signature_rectangle,
+            on_add_signature_box=controller.add_signature_box,
             on_signature_area_click=controller.open_signature_dialog,
         )
         self._logger.info("QSign view initialized")
@@ -110,9 +114,11 @@ class QSignApplication:
         )
         self._logger.info("QSign building view")
         view.build()
+        view.maximize_window()
+        view.start_erp_auto_refresh()
         view.show_startup_user_confirmation()
         self._logger.info("QSign desktop shell ready")
-        self._bind_shutdown(page, controller)
+        self._bind_shutdown(page, controller, view)
 
     def _create_signature_provider(self) -> STU430Provider | None:
         try:
@@ -121,9 +127,17 @@ class QSignApplication:
             self._logger.warning("Wacom STU provider unavailable", error=str(error))
             return None
 
-    def _bind_shutdown(self, page: "ft.Page", controller: PDFViewerController) -> None:
+    def _bind_shutdown(
+        self,
+        page: "ft.Page",
+        controller: PDFViewerController,
+        view: object | None = None,
+    ) -> None:
         def shutdown(_: object | None = None) -> None:
             self._logger.info("QSign shutdown requested")
+            stop_background_tasks = getattr(view, "stop_background_tasks", None)
+            if callable(stop_background_tasks):
+                stop_background_tasks()
             controller.shutdown()
 
         page.on_close = shutdown
@@ -136,6 +150,8 @@ class QSignApplication:
             window.on_event = lambda event: self._handle_window_event(
                 event,
                 page,
+                controller,
+                view,
                 shutdown,
             )
         update = getattr(page, "update", None)
@@ -146,12 +162,35 @@ class QSignApplication:
         self,
         event: object,
         page: "ft.Page",
+        controller: PDFViewerController,
+        view: object | None,
         shutdown: Callable[[object | None], None],
     ) -> None:
         event_type = getattr(event, "type", "")
         event_value = getattr(event_type, "value", event_type)
         if event_value != "close":
             return
+        if self._window_close_needs_confirmation(controller, view):
+            view.ask_discard_signed_document(
+                lambda: self._shutdown_and_destroy(page, shutdown, event),
+                lambda: None,
+            )
+            return
+        self._shutdown_and_destroy(page, shutdown, event)
+
+    def _window_close_needs_confirmation(
+        self, controller: PDFViewerController, view: object | None
+    ) -> bool:
+        has_unsaved = getattr(controller, "has_unsaved_signed_document", None)
+        ask_discard = getattr(view, "ask_discard_signed_document", None)
+        return callable(has_unsaved) and bool(has_unsaved()) and callable(ask_discard)
+
+    def _shutdown_and_destroy(
+        self,
+        page: "ft.Page",
+        shutdown: Callable[[object | None], None],
+        event: object,
+    ) -> None:
         shutdown(event)
         window = getattr(page, "window", None)
         destroy = getattr(window, "destroy", None)

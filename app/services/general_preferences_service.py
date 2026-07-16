@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import ctypes
 import json
+import os
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,6 +30,8 @@ class SupabaseSettings:
     table_name: str = "SaluteLavoro"
     auto_sync_templates_on_startup: bool = False
     auto_save_signed_documents: bool = False
+    auto_refresh_erp_documents: bool = False
+    erp_refresh_interval_seconds: int = 60
     show_signature_text: bool = False
     signature_capture_mode: str = "mouse"
 
@@ -52,12 +56,26 @@ class ErpUser:
 
 
 @dataclass(frozen=True, slots=True)
+class ErpDocument:
+    name: str
+    checkout_date: str = ""
+    description: str = ""
+    document_id: str = ""
+    auth_code: str = ""
+    checkout_by: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ErpUserSettings:
     users_url: str = ""
+    documents_url: str = ""
+    document_service_url: str = ""
+    company_id: str = "SALAV"
     basic_username: str = ""
     basic_password: str = ""
     selected_user_id: str = ""
     selected_user_name: str = ""
+    persistent_user: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +83,13 @@ class ErpUsersResult:
     success: bool
     message: str
     users: tuple[ErpUser, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ErpDocumentsResult:
+    success: bool
+    message: str
+    documents: tuple[ErpDocument, ...] = ()
 
 
 class GeneralPreferencesService:
@@ -76,13 +101,19 @@ class GeneralPreferencesService:
     _SUPABASE_TABLE_KEY = "supabase_table"
     _SUPABASE_AUTO_SYNC_KEY = "supabase_auto_sync_templates_on_startup"
     _AUTO_SAVE_SIGNED_DOCUMENTS_KEY = "auto_save_signed_documents"
+    _ERP_AUTO_REFRESH_DOCUMENTS_KEY = "erp_auto_refresh_documents"
+    _ERP_REFRESH_INTERVAL_SECONDS_KEY = "erp_refresh_interval_seconds"
     _SHOW_SIGNATURE_TEXT_KEY = "show_signature_text"
     _SIGNATURE_CAPTURE_MODE_KEY = "signature_capture_mode"
     _ERP_USERS_URL_KEY = "erp_users_url"
+    _ERP_DOCUMENTS_URL_KEY = "erp_documents_url"
+    _ERP_DOCUMENT_SERVICE_URL_KEY = "erp_document_service_url"
+    _ERP_COMPANY_ID_KEY = "erp_company_id"
     _ERP_BASIC_USERNAME_KEY = "erp_basic_username"
     _ERP_BASIC_PASSWORD_KEY = "erp_basic_password"
     _ERP_SELECTED_USER_ID_KEY = "erp_selected_user_id"
     _ERP_SELECTED_USER_NAME_KEY = "erp_selected_user_name"
+    _ERP_PERSISTENT_USER_KEY = "erp_persistent_user"
     _ADMIN_PASSWORD_KEY = "admin_password"
 
     def __init__(
@@ -115,6 +146,12 @@ class GeneralPreferencesService:
             auto_save_signed_documents=bool(
                 general.get(self._AUTO_SAVE_SIGNED_DOCUMENTS_KEY)
             ),
+            auto_refresh_erp_documents=bool(
+                general.get(self._ERP_AUTO_REFRESH_DOCUMENTS_KEY)
+            ),
+            erp_refresh_interval_seconds=_normalized_erp_refresh_interval_seconds(
+                general.get(self._ERP_REFRESH_INTERVAL_SECONDS_KEY)
+            ),
             show_signature_text=bool(general.get(self._SHOW_SIGNATURE_TEXT_KEY)),
             signature_capture_mode=_normalized_signature_capture_mode(
                 general.get(self._SIGNATURE_CAPTURE_MODE_KEY)
@@ -138,6 +175,14 @@ class GeneralPreferencesService:
         general[self._AUTO_SAVE_SIGNED_DOCUMENTS_KEY] = (
             settings.auto_save_signed_documents
         )
+        general[self._ERP_AUTO_REFRESH_DOCUMENTS_KEY] = (
+            settings.auto_refresh_erp_documents
+        )
+        general[self._ERP_REFRESH_INTERVAL_SECONDS_KEY] = (
+            _normalized_erp_refresh_interval_seconds(
+                settings.erp_refresh_interval_seconds
+            )
+        )
         general[self._SHOW_SIGNATURE_TEXT_KEY] = settings.show_signature_text
         general[self._SIGNATURE_CAPTURE_MODE_KEY] = (
             _normalized_signature_capture_mode(settings.signature_capture_mode)
@@ -150,6 +195,16 @@ class GeneralPreferencesService:
         general = self._read_general_preferences()
         return ErpUserSettings(
             users_url=self._read_encrypted_value(general, self._ERP_USERS_URL_KEY),
+            documents_url=self._read_encrypted_value(
+                general, self._ERP_DOCUMENTS_URL_KEY
+            ),
+            document_service_url=self._read_encrypted_value(
+                general, self._ERP_DOCUMENT_SERVICE_URL_KEY
+            ),
+            company_id=(
+                self._read_encrypted_value(general, self._ERP_COMPANY_ID_KEY)
+                or "SALAV"
+            ),
             basic_username=self._read_encrypted_value(
                 general, self._ERP_BASIC_USERNAME_KEY
             ),
@@ -158,9 +213,23 @@ class GeneralPreferencesService:
             ),
             selected_user_id=str(general.get(self._ERP_SELECTED_USER_ID_KEY) or ""),
             selected_user_name=str(general.get(self._ERP_SELECTED_USER_NAME_KEY) or ""),
+            persistent_user=bool(general.get(self._ERP_PERSISTENT_USER_KEY)),
         )
 
     def save_erp_user_settings(self, settings: ErpUserSettings) -> None:
+        users_url = settings.users_url.strip()
+        if users_url and not users_url.startswith("https://"):
+            raise GeneralPreferencesServiceError("URL utenti ERP non valido")
+        documents_url = settings.documents_url.strip()
+        if documents_url and not documents_url.startswith("https://"):
+            raise GeneralPreferencesServiceError(
+                "URL query documenti ERP non valido"
+            )
+        document_service_url = settings.document_service_url.strip()
+        if document_service_url and not document_service_url.startswith("https://"):
+            raise GeneralPreferencesServiceError(
+                "URL servizio documentale SOAP non valido"
+            )
         previous_settings = self.get_erp_user_settings()
         payload = self._read_preferences()
         general = payload.get(self._PREFERENCES_KEY)
@@ -168,6 +237,15 @@ class GeneralPreferencesService:
             general = {}
         general[self._ERP_USERS_URL_KEY] = self._encrypted_payload(
             settings.users_url.strip()
+        )
+        general[self._ERP_DOCUMENTS_URL_KEY] = self._encrypted_payload(
+            settings.documents_url.strip()
+        )
+        general[self._ERP_DOCUMENT_SERVICE_URL_KEY] = self._encrypted_payload(
+            settings.document_service_url.strip()
+        )
+        general[self._ERP_COMPANY_ID_KEY] = self._encrypted_payload(
+            settings.company_id.strip() or "SALAV"
         )
         general[self._ERP_BASIC_USERNAME_KEY] = self._encrypted_payload(
             settings.basic_username.strip()
@@ -177,6 +255,7 @@ class GeneralPreferencesService:
         )
         general[self._ERP_SELECTED_USER_ID_KEY] = settings.selected_user_id.strip()
         general[self._ERP_SELECTED_USER_NAME_KEY] = settings.selected_user_name.strip()
+        general[self._ERP_PERSISTENT_USER_KEY] = bool(settings.persistent_user)
         payload[self._PREFERENCES_KEY] = general
         self._write_preferences(payload)
         self._log_erp_user_settings_saved(previous_settings, settings)
@@ -229,7 +308,7 @@ class GeneralPreferencesService:
         password = effective_settings.basic_password.strip()
         if not users_url:
             return ErpUsersResult(False, "URL utenti ERP obbligatorio")
-        if not users_url.startswith(("https://", "http://")):
+        if not users_url.startswith("https://"):
             return ErpUsersResult(False, "URL utenti ERP non valido")
         if not username:
             return ErpUsersResult(False, "Utente Basic Auth obbligatorio")
@@ -267,6 +346,68 @@ class GeneralPreferencesService:
         if not users:
             return ErpUsersResult(False, "Nessun utente restituito dall'ERP")
         return ErpUsersResult(True, f"Caricati {len(users)} utenti", tuple(users))
+
+    def fetch_erp_documents(
+        self, settings: ErpUserSettings | None = None
+    ) -> ErpDocumentsResult:
+        effective_settings = settings or self.get_erp_user_settings()
+        documents_url = effective_settings.documents_url.strip()
+        username = effective_settings.basic_username.strip()
+        password = effective_settings.basic_password.strip()
+        selected_user_id = effective_settings.selected_user_id.strip()
+        if not documents_url or not selected_user_id:
+            return ErpDocumentsResult(True, "Configurazione documenti ERP incompleta")
+        if not documents_url.startswith("https://"):
+            return ErpDocumentsResult(False, "URL query documenti ERP non valido")
+        if not username:
+            return ErpDocumentsResult(False, "Utente Basic Auth obbligatorio")
+        if not password:
+            return ErpDocumentsResult(False, "Password Basic Auth obbligatoria")
+
+        request = urllib.request.Request(
+            _url_with_query_parameter(
+                documents_url,
+                "pVFCHECKOUTBY",
+                selected_user_id,
+            ),
+            headers={
+                "Accept": "application/json",
+                "Authorization": self._basic_auth_header(username, password),
+            },
+            method="GET",
+        )
+        try:
+            response = self._opener(request, timeout=8)
+            status = int(getattr(response, "status", 200))
+            body = _read_response_body(response)
+        except urllib.error.HTTPError as error:
+            if error.code in {401, 403}:
+                return ErpDocumentsResult(
+                    False, "Connessione ERP fallita: credenziali non autorizzate"
+                )
+            return ErpDocumentsResult(False, f"Risposta ERP non valida: {error.code}")
+        except Exception:
+            return ErpDocumentsResult(False, "Connessione ERP documenti fallita")
+
+        if not 200 <= status < 300:
+            return ErpDocumentsResult(False, f"Risposta ERP non valida: {status}")
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return ErpDocumentsResult(False, "Risposta ERP non in formato JSON")
+        rows = _erp_document_rows(payload)
+        if rows is None:
+            return ErpDocumentsResult(False, "Risposta ERP documenti non valida")
+        documents = _parse_erp_documents(payload, selected_user_id)
+        return ErpDocumentsResult(
+            True,
+            (
+                "Nessun documento da firmare"
+                if not documents
+                else f"Caricati {len(documents)} documenti"
+            ),
+            tuple(documents),
+        )
 
     def test_supabase_connection(
         self, settings: SupabaseSettings | None = None
@@ -478,6 +619,10 @@ class GeneralPreferencesService:
             ),
             auto_sync_templates_on_startup=settings.auto_sync_templates_on_startup,
             auto_save_signed_documents=settings.auto_save_signed_documents,
+            auto_refresh_erp_documents=settings.auto_refresh_erp_documents,
+            erp_refresh_interval_seconds=_normalized_erp_refresh_interval_seconds(
+                settings.erp_refresh_interval_seconds
+            ),
             show_signature_text=settings.show_signature_text,
             signature_capture_mode=_normalized_signature_capture_mode(
                 settings.signature_capture_mode
@@ -500,6 +645,22 @@ class GeneralPreferencesService:
             users_url_changed=(
                 previous_settings.users_url.strip() != settings.users_url.strip()
             ),
+            documents_url_configured=bool(settings.documents_url.strip()),
+            documents_url_changed=(
+                previous_settings.documents_url.strip()
+                != settings.documents_url.strip()
+            ),
+            document_service_url_configured=bool(
+                settings.document_service_url.strip()
+            ),
+            document_service_url_changed=(
+                previous_settings.document_service_url.strip()
+                != settings.document_service_url.strip()
+            ),
+            company_id_configured=bool(settings.company_id.strip()),
+            company_id_changed=(
+                previous_settings.company_id.strip() != settings.company_id.strip()
+            ),
             basic_username_configured=bool(settings.basic_username.strip()),
             basic_username_changed=(
                 previous_settings.basic_username.strip()
@@ -516,6 +677,10 @@ class GeneralPreferencesService:
                 != settings.selected_user_id.strip()
                 or previous_settings.selected_user_name.strip()
                 != settings.selected_user_name.strip()
+            ),
+            persistent_user=settings.persistent_user,
+            persistent_user_changed=(
+                previous_settings.persistent_user != settings.persistent_user
             ),
         )
 
@@ -559,7 +724,12 @@ class GeneralPreferencesService:
             return ""
         try:
             return self._unprotect(encrypted)
-        except GeneralPreferencesServiceError:
+        except GeneralPreferencesServiceError as error:
+            self._log_preferences_warning(
+                "Encrypted preference could not be read",
+                key=key,
+                error_type=type(error).__name__,
+            )
             return ""
 
     def _encrypted_payload(self, value: str) -> dict[str, str]:
@@ -569,20 +739,82 @@ class GeneralPreferencesService:
         }
 
     def _read_preferences(self) -> dict[str, Any]:
-        if not self._preferences_path.is_file():
+        payload = self._read_json_object(self._preferences_path)
+        if payload is not None:
+            return payload
+        if not self._preferences_path.exists():
             return {}
-        try:
-            payload = json.loads(self._preferences_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
+        backup_path = self._backup_preferences_path()
+        backup_payload = self._read_json_object(backup_path)
+        if backup_payload is not None:
+            self._log_preferences_warning(
+                "Preferences file is not readable; backup loaded",
+                source="backup",
+            )
+            return backup_payload
+        self._log_preferences_warning(
+            "Preferences file and backup are not readable",
+            source="defaults",
+        )
+        return {}
 
     def _write_preferences(self, payload: dict[str, Any]) -> None:
         self._preferences_path.parent.mkdir(parents=True, exist_ok=True)
-        self._preferences_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        content = json.dumps(payload, indent=2, ensure_ascii=False)
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self._preferences_path.parent,
+                prefix=f".{self._preferences_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+                temp_file.write(content)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            if self._read_json_object(self._preferences_path) is not None:
+                self._copy_valid_preferences_to_backup()
+            self._replace_preferences_file(temp_path, self._preferences_path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def _backup_preferences_path(self) -> Path:
+        return self._preferences_path.with_name(f"{self._preferences_path.name}.bak")
+
+    def _read_json_object(self, path: Path) -> dict[str, Any] | None:
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _copy_valid_preferences_to_backup(self) -> None:
+        backup_path = self._backup_preferences_path()
+        content = self._preferences_path.read_text(encoding="utf-8")
+        with backup_path.open("w", encoding="utf-8") as backup_file:
+            backup_file.write(content)
+            backup_file.flush()
+            os.fsync(backup_file.fileno())
+
+    def _replace_preferences_file(self, source: Path, destination: Path) -> None:
+        source.replace(destination)
+
+    def _log_preferences_warning(self, message: str, **context: object) -> None:
+        if self._logger is None:
+            return
+        warning = getattr(self._logger, "warning", None)
+        if callable(warning):
+            warning(message, **context)
 
     @classmethod
     def _protect_text(cls, value: str) -> str:
@@ -704,6 +936,20 @@ def _changed_general_settings_fields(
         != settings.auto_save_signed_documents
     ):
         changed_fields.add("auto_save_signed_documents")
+    if (
+        previous_settings.auto_refresh_erp_documents
+        != settings.auto_refresh_erp_documents
+    ):
+        changed_fields.add("auto_refresh_erp_documents")
+    if (
+        _normalized_erp_refresh_interval_seconds(
+            previous_settings.erp_refresh_interval_seconds
+        )
+        != _normalized_erp_refresh_interval_seconds(
+            settings.erp_refresh_interval_seconds
+        )
+    ):
+        changed_fields.add("erp_refresh_interval_seconds")
     if previous_settings.show_signature_text != settings.show_signature_text:
         changed_fields.add("show_signature_text")
     if (
@@ -719,6 +965,69 @@ def _normalized_signature_capture_mode(value: object) -> str:
     if mode == "wacom":
         return "wacom"
     return "mouse"
+
+
+def _normalized_erp_refresh_interval_seconds(value: object) -> int:
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return 60
+    return max(30, seconds)
+
+
+def _url_with_query_parameter(url: str, name: str, value: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query.append((name, value))
+    return urllib.parse.urlunsplit(
+        parsed._replace(query=urllib.parse.urlencode(query))
+    )
+
+
+def _erp_document_rows(payload: object) -> list[object] | None:
+    if not isinstance(payload, dict):
+        return None
+    if "data" not in payload:
+        return None
+    rows = payload.get("data")
+    if not isinstance(rows, list):
+        return None
+    return rows
+
+
+def _parse_erp_documents(payload: object, selected_user_id: str) -> list[ErpDocument]:
+    rows = _erp_document_rows(payload)
+    if rows is None:
+        return []
+    documents: list[ErpDocument] = []
+    normalized_user_id = selected_user_id.strip()
+    for row in rows:
+        document = _erp_document_from_row(row, normalized_user_id)
+        if document is not None:
+            documents.append(document)
+    return documents
+
+
+def _erp_document_from_row(
+    row: object,
+    selected_user_id: str,
+) -> ErpDocument | None:
+    if not isinstance(row, dict):
+        return None
+    checkout_by = str(row.get("vfcheckoutby") or "").strip()
+    if checkout_by != selected_user_id:
+        return None
+    name = str(row.get("vfname") or "").strip()
+    if not name:
+        return None
+    return ErpDocument(
+        name=name,
+        checkout_date=str(row.get("vfcheckoutdate") or "").strip(),
+        description=str(row.get("vfdescri") or "").strip(),
+        document_id=str(row.get("vfcodiceid") or "").strip(),
+        auth_code=str(row.get("vfauthcode") or "").strip(),
+        checkout_by=checkout_by,
+    )
 
 
 def _parse_erp_users(payload: object) -> list[ErpUser]:

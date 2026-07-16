@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Sequence
 
 from services.signature.signature_service import CapturedSignature
 
@@ -50,6 +51,21 @@ class VisiblePDFSignatureWriter(ABC):
         area: SignatureArea,
     ) -> None:
         """Create a destination PDF with the visible signature applied."""
+
+    def save_with_visible_signatures(
+        self,
+        source: Path,
+        destination: Path,
+        signatures: Sequence[tuple[CapturedSignature, SignatureArea]],
+    ) -> None:
+        """Create a destination PDF with multiple visible signatures applied."""
+        if not signatures:
+            raise ValueError("At least one visible signature is required")
+        if len(signatures) == 1:
+            signature, area = signatures[0]
+            self.save_with_visible_signature(source, destination, signature, area)
+            return
+        raise NotImplementedError("Multiple visible signatures are not supported")
 
 
 class DigitalPDFSignatureWriter(ABC):

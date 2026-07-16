@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0",
-  "template_id": "learned_trattamento_personali_data___________informa_amento_sensibili_documento_sensi",
-  "code": "LEARNED_TRATTAMENTO_PERSONALI_DATA___________INFORMA_AMENTO_SENSIBILI_DOCUMENTO_SENSI",
-  "name": "Template provvisorio learned_trattamento_personali_data___________informa_amento_sensibili_documento_sensi",
+  "template_id": "learned_perticari_visita_medica_preventiva_azienda_technogym_lavoratore_sesso",
+  "code": "LEARNED_PERTICARI_VISITA_MEDICA_PREVENTIVA_AZIENDA_TECHNOGYM_LAVORATORE_SESSO",
+  "name": "Template provvisorio learned_perticari_visita_medica_preventiva_azienda_technogym_lavoratore_sesso",
   "description": "Template creato dal primo flusso manuale QSign.",
   "document_type": "manual_signature_flow",
   "version": "0.1.0",
@@ -13,7 +13,7 @@
     {
       "rule_id": "manual-filename-stem",
       "rule_type": "literal",
-      "expression": "851011_sn7aopkbcc",
+      "expression": "d87f990faa0d46bb83de3e6040bd3cdc_VISITA_NUZZO_GIANLUCA_27313_20260716",
       "scope": "document",
       "required": false,
       "weight": 0.25
@@ -21,7 +21,7 @@
     {
       "rule_id": "manual-recognition-phrase",
       "rule_type": "literal",
-      "expression": "Salute e Lavoro Società Coopera va Ambulatori Via Meucci, 18 - 47122 Forlì (FC) Tel. 0543 798337 Via G. Per cari, 2/A - 47035 Salute e Lavoro Società Coopera va",
+      "expression": "Salute e Lavoro Società Cooperativa Ambulatori Via Meucci, 18 - 47122 Forlì (FC) Tel. 0543 798337 Via G. Perticari, 2/A - 47035 Gambettola (FC) Salute e Lavoro ",
       "scope": "document",
       "required": false,
       "weight": 6.0
@@ -29,7 +29,7 @@
     {
       "rule_id": "manual-structural-signature",
       "rule_type": "literal",
-      "expression": "trattamento personali data__________ informa amento sensibili documento sensi regolamento titolare avente it03455980403 osservanza quanto previsto siamo",
+      "expression": "perticari visita medica preventiva azienda technogym lavoratore sesso nuzzo gianluca luogo nascita pesaro codice fiscale nzzglc93t22g479m",
       "scope": "document",
       "required": true,
       "weight": 10.0
@@ -37,7 +37,7 @@
     {
       "rule_id": "manual-visual-signature",
       "rule_type": "visual_hash",
-      "expression": "000000003ffffffc3f847c443834fc7c3ffffffc0ffffff000003fc000003f8000003f001fc316301ffffff81ff8000007e4000007fffb581fe000001ffffff81ffffff81fffff781ffb80000ffffff807d7f00007ffff681ffe00001ffffff80ef7ce9007fe8d201fff57101af685f01fffec60066000000000000000000000",
+      "expression": "fe000000f8000000fff0000000000000ffef0000fffffffec7c00000ffc001f0fffffffee7c003f0c7e00000f7c00000e0000380ffe00fc0f7e00000fff00000000003f0000003f0ffffffdcfffe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffb800",
       "scope": "document",
       "required": true,
       "weight": 30.0
@@ -45,7 +45,7 @@
     {
       "rule_id": "manual-keyword-1",
       "rule_type": "literal",
-      "expression": "trattamento",
+      "expression": "perticari",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -53,7 +53,7 @@
     {
       "rule_id": "manual-keyword-2",
       "rule_type": "literal",
-      "expression": "personali",
+      "expression": "visita",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -61,7 +61,7 @@
     {
       "rule_id": "manual-keyword-3",
       "rule_type": "literal",
-      "expression": "data__________",
+      "expression": "medica",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -69,7 +69,7 @@
     {
       "rule_id": "manual-keyword-4",
       "rule_type": "literal",
-      "expression": "informa",
+      "expression": "preventiva",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -77,7 +77,7 @@
     {
       "rule_id": "manual-keyword-5",
       "rule_type": "literal",
-      "expression": "amento",
+      "expression": "azienda",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -85,7 +85,7 @@
     {
       "rule_id": "manual-keyword-6",
       "rule_type": "literal",
-      "expression": "sensibili",
+      "expression": "technogym",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -93,7 +93,7 @@
     {
       "rule_id": "manual-keyword-7",
       "rule_type": "literal",
-      "expression": "documento",
+      "expression": "lavoratore",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -101,38 +101,48 @@
     {
       "rule_id": "manual-keyword-8",
       "rule_type": "literal",
-      "expression": "sensi",
+      "expression": "sesso",
       "scope": "document",
       "required": false,
       "weight": 1.25
     }
   ],
-  "anchor_rules": [],
+  "anchor_rules": [
+    {
+      "anchor_id": "manual-learned-anchor",
+      "name": "Anchor appreso manualmente",
+      "search_type": "text",
+      "expression": "Per presa visione",
+      "scope": "document",
+      "occurrence_policy": "first",
+      "required": false
+    }
+  ],
   "placement_rules": [
+    {
+      "placement_id": "relative-signature",
+      "role": "signer",
+      "anchor_id": "manual-learned-anchor",
+      "side": "relative",
+      "alignment": "manual",
+      "x_offset": -68.489990234375,
+      "y_offset": 12.83782958984375,
+      "width": 227.0,
+      "height": 138.0,
+      "page_index": null,
+      "required": true
+    },
     {
       "placement_id": "manual-signature",
       "role": "signer",
       "anchor_id": "manual",
       "side": "manual",
       "alignment": "manual",
-      "x_offset": 376.5650329589844,
-      "y_offset": 479.9052734375,
-      "width": 110.0,
-      "height": 40.0,
-      "page_index": 1,
-      "required": true
-    },
-    {
-      "placement_id": "manual-signature-2",
-      "role": "signer",
-      "anchor_id": "manual",
-      "side": "manual",
-      "alignment": "manual",
-      "x_offset": 97.5,
-      "y_offset": 453.0,
-      "width": 137.0,
-      "height": 80.0,
-      "page_index": 1,
+      "x_offset": 348.5,
+      "y_offset": 417.0,
+      "width": 227.0,
+      "height": 138.0,
+      "page_index": 2,
       "required": true
     }
   ],

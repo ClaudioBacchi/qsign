@@ -86,6 +86,40 @@ class PyMuPDFSignatureWriterTests(unittest.TestCase):
                     ),
                 )
 
+    def test_save_with_visible_signature_rejects_existing_destination(self) -> None:
+        writer = PyMuPDFSignatureWriter(
+            logger=LoggingService.create("qsign.tests.signature_writer.exists")
+        )
+        signature = CapturedSignature(
+            content=(
+                b"<svg xmlns='http://www.w3.org/2000/svg' "
+                b"width='420' height='180' viewBox='0 0 420 180'>"
+                b"<polyline points='20,90 120,50' "
+                b"fill='none' stroke='black' stroke-width='3'/></svg>"
+            ),
+            media_type="image/svg+xml",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "signed.pdf"
+            destination.write_bytes(b"%PDF-existing")
+
+            with self.assertRaises(FileExistsError):
+                writer.save_with_visible_signature(
+                    source=self.sample,
+                    destination=destination,
+                    signature=signature,
+                    area=SignatureArea(
+                        page_index=0,
+                        x=100,
+                        y=600,
+                        width=180,
+                        height=60,
+                    ),
+                )
+
+            self.assertEqual(destination.read_bytes(), b"%PDF-existing")
+
 
 if __name__ == "__main__":
     unittest.main()

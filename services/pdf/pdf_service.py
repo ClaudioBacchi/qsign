@@ -1,6 +1,9 @@
 """PDF use-case service independent from any concrete PDF library."""
 
+from collections.abc import Sequence
+from datetime import datetime, timezone
 from pathlib import Path
+import uuid
 
 from models.pdf_document import PDFDocument, PageSize
 from services.logging.logging_service import LoggingService
@@ -115,8 +118,10 @@ class PDFService:
         destination_path = (
             Path(destination)
             if destination is not None
-            else self._default_signed_preview_path(document.path)
+            else self._unique_signed_preview_path(document.path)
         )
+        if destination is not None and destination_path.exists():
+            raise FileExistsError(f"Signed PDF destination already exists: {destination_path}")
         self._signature_writer.save_with_visible_signature(
             source=document.path,
             destination=destination_path,
@@ -127,6 +132,38 @@ class PDFService:
             "Signed PDF preview saved",
             source=str(document.path),
             destination=str(destination_path),
+        )
+        return destination_path
+
+    def save_signed_previews(
+        self,
+        signatures: Sequence[tuple[CapturedSignature, SignatureArea]],
+        destination: str | Path | None = None,
+    ) -> Path:
+        """Save a PDF copy with multiple visible captured signatures applied."""
+        document = self._require_document()
+        if self._signature_writer is None:
+            raise RuntimeError("No visible PDF signature writer has been configured")
+        if not signatures:
+            raise ValueError("At least one visible signature is required")
+
+        destination_path = (
+            Path(destination)
+            if destination is not None
+            else self._unique_signed_preview_path(document.path)
+        )
+        if destination is not None and destination_path.exists():
+            raise FileExistsError(f"Signed PDF destination already exists: {destination_path}")
+        self._signature_writer.save_with_visible_signatures(
+            source=document.path,
+            destination=destination_path,
+            signatures=signatures,
+        )
+        self._logger.info(
+            "Signed PDF preview saved",
+            source=str(document.path),
+            destination=str(destination_path),
+            signatures=len(signatures),
         )
         return destination_path
 
@@ -141,5 +178,7 @@ class PDFService:
             raise RuntimeError("No PDF document is open")
         return self._document
 
-    def _default_signed_preview_path(self, source: Path) -> Path:
-        return self._signed_output_directory / f"{source.stem}_signed.pdf"
+    def _unique_signed_preview_path(self, source: Path) -> Path:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+        suffix = uuid.uuid4().hex[:8]
+        return self._signed_output_directory / f"{source.stem}_signed_{timestamp}_{suffix}.pdf"

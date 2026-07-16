@@ -7,8 +7,12 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import pymupdf
+
 from app.services.certificate_service import CertificateInfo, SignatureMetadata
 from app.services.general_preferences_service import (
+    ErpDocument,
+    ErpDocumentsResult,
     ErpUser,
     ErpUserSettings,
     ErpUsersResult,
@@ -19,6 +23,8 @@ from app.services.general_preferences_service import (
 from models.document import Rectangle
 from ui.main_view import MainView
 
+VALID_PDF_BYTES = b""
+
 
 class FakePage:
     def __init__(self) -> None:
@@ -27,6 +33,7 @@ class FakePage:
         self.updated = False
         self.launched_urls: list[str] = []
         self.pop_count = 0
+        self.window = SimpleNamespace(maximized=False)
 
     def add(self, *controls: object) -> None:
         self.controls.extend(controls)
@@ -99,6 +106,748 @@ class MainViewTests(unittest.TestCase):
         view._viewer_placeholder.on_tap(None)
 
         self.assertEqual(page.launched_urls, ["https://queensrl.net"])
+
+    def test_erp_documents_are_not_loaded_without_documents_url(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(selected_user_id="20")
+        view = MainView(page, general_preferences_service=service)
+
+        shown = view.refresh_erp_documents()
+
+        self.assertFalse(shown)
+        self.assertEqual(service.erp_document_fetch_count, 0)
+        self.assertIs(view._home_view.content, view._viewer_placeholder)
+        self.assertTrue(view._viewer_placeholder.visible)
+
+    def test_erp_documents_are_not_loaded_without_selected_erp_user(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        shown = view.refresh_erp_documents()
+
+        self.assertFalse(shown)
+        self.assertEqual(service.erp_document_fetch_count, 0)
+        self.assertIs(view._home_view.content, view._viewer_placeholder)
+
+    def test_erp_documents_grid_shows_safe_columns_only(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            basic_username="api-user",
+            basic_password="api-secret",
+            selected_user_id="20",
+            selected_user_name="Romani",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            True,
+            "Caricati 1 documenti",
+            (ErpDocument("NOME_DOCUMENTO.pdf", "2026-07-16 09:29:57", "Visita"),),
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        shown = view.refresh_erp_documents()
+
+        self.assertTrue(shown)
+        self.assertEqual(service.erp_document_fetch_settings.selected_user_id, "20")
+        content_column = view._home_view.content.content
+        self.assertEqual(content_column.controls[0].controls[0].value, "Documenti ERP da firmare")
+        table = content_column.controls[1].content.controls[0]
+        self.assertTrue(content_column.controls[1].expand)
+        self.assertTrue(content_column.controls[1].content.expand)
+        self.assertEqual(
+            [column.label.value for column in table.columns],
+            ["Nome documento", "Data"],
+        )
+        self.assertEqual(table.rows[0].cells[0].content.value, "NOME_DOCUMENTO.pdf")
+        self.assertEqual(table.rows[0].cells[1].content.value, "2026-07-16 09:29:57")
+        self.assertEqual(len(table.rows[0].cells), 2)
+
+    def test_erp_documents_refresh_runs_in_background_and_keeps_local_open_available(self) -> None:
+        page = FakePage()
+        service = _erp_download_service()
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
+        view = MainView(page, general_preferences_service=service)
+        view.build()
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+
+        shown = view.refresh_erp_documents()
+
+        self.assertTrue(shown)
+        self.assertEqual(service.erp_document_fetch_count, 0)
+        self.assertEqual(len(background_jobs), 1)
+        self.assertEqual(_erp_documents_body(view).value, "Caricamento documenti...")
+        self.assertTrue(_erp_refresh_button(view).disabled)
+        toolbar = page.controls[0].controls[0].content
+        self.assertEqual(toolbar.controls[1].controls[0].tooltip, "Apri")
+
+        background_jobs[0]()
+        self.assertEqual(service.erp_document_fetch_count, 1)
+        ui_jobs[0]()
+
+        self.assertFalse(_erp_refresh_button(view).disabled)
+
+    def test_erp_documents_refresh_coalesces_pending_requests(self) -> None:
+        page = FakePage()
+        service = _erp_download_service()
+        service.erp_document_results = [
+            ErpDocumentsResult(
+                True,
+                "Caricati 1 documenti",
+                (ErpDocument("OLD.pdf", "", "", "DOC-OLD", "AUTH-OLD", "20"),),
+            ),
+            ErpDocumentsResult(
+                True,
+                "Nessun documento da firmare",
+                (),
+            ),
+        ]
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
+        view = MainView(page, general_preferences_service=service)
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+
+        view.refresh_erp_documents()
+        view.refresh_erp_documents()
+        view.refresh_erp_documents()
+
+        self.assertEqual(len(background_jobs), 1)
+        background_jobs[0]()
+        ui_jobs[0]()
+
+        self.assertEqual(len(background_jobs), 2)
+        background_jobs[1]()
+        ui_jobs[1]()
+
+        self.assertEqual(service.erp_document_fetch_count, 2)
+        self.assertEqual(_erp_documents_body(view).value, "Nessun documento da firmare")
+
+    def test_erp_documents_result_after_shutdown_is_ignored(self) -> None:
+        page = FakePage()
+        service = _erp_download_service()
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
+        view = MainView(page, general_preferences_service=service)
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+
+        view.refresh_erp_documents()
+        page.updated = False
+        view.stop_background_tasks()
+        background_jobs[0]()
+        ui_jobs[0]()
+
+        self.assertFalse(page.updated)
+
+    def test_erp_documents_result_for_old_user_starts_one_current_refresh(self) -> None:
+        page = FakePage()
+        service = _erp_download_service()
+        service.erp_document_results = [
+            ErpDocumentsResult(
+                True,
+                "Caricati 1 documenti",
+                (ErpDocument("A.pdf", "", "", "DOC-A", "AUTH-A", "20"),),
+            ),
+            ErpDocumentsResult(
+                True,
+                "Caricati 1 documenti",
+                (ErpDocument("B.pdf", "", "", "DOC-B", "AUTH-B", "21"),),
+            ),
+        ]
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
+        view = MainView(page, general_preferences_service=service)
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+
+        view.refresh_erp_documents()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            document_service_url="https://erp.example.test/soap",
+            company_id="SALAV",
+            basic_username="api-user",
+            basic_password="api-secret",
+            selected_user_id="21",
+            selected_user_name="Bianchi",
+        )
+        background_jobs[0]()
+        ui_jobs[0]()
+
+        self.assertEqual(len(background_jobs), 2)
+        background_jobs[1]()
+        ui_jobs[1]()
+        table = view._home_view.content.content.controls[1].content.controls[0]
+        self.assertEqual(table.rows[0].cells[0].content.value, "B.pdf")
+
+    def test_erp_documents_error_restores_retry_button(self) -> None:
+        page = FakePage()
+        service = _erp_download_service()
+        service.erp_documents_result = ErpDocumentsResult(
+            False,
+            "Connessione ERP documenti fallita",
+            (),
+        )
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
+        view = MainView(page, general_preferences_service=service)
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+
+        view.refresh_erp_documents()
+        background_jobs[0]()
+        ui_jobs[0]()
+
+        error_column = view._home_view.content.content
+        self.assertEqual(error_column.controls[1].value, "Connessione ERP documenti fallita")
+        self.assertEqual(_button_label(error_column.controls[2]), "Riprova")
+
+    def test_erp_document_open_downloads_temp_pdf_and_opens_viewer(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            document_service_url="https://erp.example.test/soap",
+            company_id="SALAV",
+            basic_username="api-user",
+            basic_password="api-secret",
+            selected_user_id="20",
+            selected_user_name="Romani",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            True,
+            "Caricati 1 documenti",
+            (
+                ErpDocument(
+                    "../NOME_DOCUMENTO.pdf",
+                    "2026-07-16 09:29:57",
+                    "",
+                    "DOC-1",
+                    "AUTH-1",
+                    "20",
+                ),
+            ),
+        )
+        client = FakeInfinityDmsClient(_valid_pdf_bytes())
+        opened_paths: list[str] = []
+        view = MainView(
+            page,
+            general_preferences_service=service,
+            infinity_dms_client=client,
+        )
+        view.bind_actions(
+            on_open_document=lambda path: opened_paths.append(path),
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
+
+        view.refresh_erp_documents()
+        table = view._home_view.content.content.controls[1].content.controls[0]
+        _find_button(table, "Apri").on_click(None)
+
+        self.assertEqual(len(opened_paths), 1)
+        self.assertIsNone(view._home_view.content.content.controls[2].color)
+        opened_path = Path(opened_paths[0])
+        self.assertTrue(opened_path.is_file())
+        self.assertEqual(opened_path.read_bytes(), _valid_pdf_bytes())
+        self.assertNotIn("..", opened_path.name)
+        self.assertEqual(client.calls[0]["document_id"], "DOC-1")
+        self.assertEqual(client.calls[0]["auth_code"], "AUTH-1")
+        view.stop_background_tasks()
+        self.assertFalse(opened_path.exists())
+
+    def test_erp_temp_files_are_isolated_by_view_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            first = MainView(
+                FakePage(),
+                erp_temp_base_directory=base,
+                erp_temp_session_id="session-a",
+            )
+            second = MainView(
+                FakePage(),
+                erp_temp_base_directory=base,
+                erp_temp_session_id="session-b",
+            )
+
+            first_path = first._save_erp_temp_pdf("same.pdf", b"%PDF-a")
+            second_path = second._save_erp_temp_pdf("same.pdf", b"%PDF-b")
+
+            self.assertNotEqual(first_path.parent, second_path.parent)
+            self.assertEqual(first_path.parent.name, "session-a")
+            self.assertEqual(second_path.parent.name, "session-b")
+            self.assertTrue(first_path.exists())
+            self.assertTrue(second_path.exists())
+
+    def test_erp_temp_cleanup_does_not_delete_other_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            first = MainView(
+                FakePage(),
+                erp_temp_base_directory=base,
+                erp_temp_session_id="session-a",
+            )
+            second = MainView(
+                FakePage(),
+                erp_temp_base_directory=base,
+                erp_temp_session_id="session-b",
+            )
+            first_path = first._save_erp_temp_pdf("same.pdf", b"%PDF-a")
+            second_path = second._save_erp_temp_pdf("same.pdf", b"%PDF-b")
+
+            first.stop_background_tasks()
+
+            self.assertFalse(first_path.exists())
+            self.assertTrue(second_path.exists())
+
+            second.stop_background_tasks()
+
+            self.assertFalse(second_path.exists())
+
+    def test_erp_temp_cleanup_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            view = MainView(
+                FakePage(),
+                erp_temp_base_directory=Path(directory),
+                erp_temp_session_id="session-a",
+            )
+            path = view._save_erp_temp_pdf("same.pdf", b"%PDF-a")
+
+            view.stop_background_tasks()
+            view.stop_background_tasks()
+
+            self.assertFalse(path.exists())
+
+    def test_erp_document_open_error_keeps_grid_and_local_open_available(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            document_service_url="https://erp.example.test/soap",
+            company_id="SALAV",
+            basic_username="api-user",
+            basic_password="api-secret",
+            selected_user_id="20",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            True,
+            "Caricati 1 documenti",
+            (ErpDocument("NOME.pdf", "", "", "DOC-1", "AUTH-1", "20"),),
+        )
+        client = FakeInfinityDmsClient(error=RuntimeError("boom"))
+        opened_paths: list[str] = []
+        view = MainView(
+            page,
+            general_preferences_service=service,
+            infinity_dms_client=client,
+        )
+        view.bind_actions(
+            on_open_document=lambda path: opened_paths.append(path),
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
+        view.build()
+
+        view.refresh_erp_documents()
+        toolbar = page.controls[0].controls[0].content
+        table = view._home_view.content.content.controls[1].content.controls[0]
+        _find_button(table, "Apri").on_click(None)
+
+        self.assertEqual(opened_paths, [])
+        self.assertTrue(view._home_view.visible)
+        self.assertEqual(
+            view._home_view.content.content.controls[2].value,
+            "Download documento ERP fallito",
+        )
+        self.assertEqual(toolbar.controls[1].controls[0].tooltip, "Apri")
+        self.assertEqual(view._erp_temp_files, set())
+
+    def test_erp_document_double_click_starts_single_download(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            document_service_url="https://erp.example.test/soap",
+            company_id="SALAV",
+            basic_username="api-user",
+            basic_password="api-secret",
+            selected_user_id="20",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            True,
+            "Caricati 1 documenti",
+            (ErpDocument("NOME.pdf", "", "", "DOC-1", "AUTH-1", "20"),),
+        )
+        client = FakeInfinityDmsClient(_valid_pdf_bytes())
+        background_jobs = []
+        view = MainView(
+            page,
+            general_preferences_service=service,
+            infinity_dms_client=client,
+        )
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
+
+        view.refresh_erp_documents()
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        table = view._home_view.content.content.controls[1].content.controls[0]
+        open_button = _find_button(table, "Apri")
+        open_button.on_click(None)
+        open_button.on_click(None)
+
+        self.assertEqual(
+            view._home_view.content.content.controls[2].color,
+            view._ft.Colors.RED_700,
+        )
+        self.assertEqual(len(background_jobs), 1)
+        self.assertEqual(client.calls, [])
+
+    def test_erp_download_started_after_shutdown_does_not_call_transport_or_ui(self) -> None:
+        page = FakePage()
+        service = _erp_download_service()
+        client = FakeInfinityDmsClient(_valid_pdf_bytes())
+        background_jobs: list[object] = []
+        opened_paths: list[str] = []
+        view = MainView(
+            page,
+            general_preferences_service=service,
+            infinity_dms_client=client,
+        )
+        view.bind_actions(
+            on_open_document=lambda path: opened_paths.append(path),
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
+
+        view.refresh_erp_documents()
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: self.fail("UI task should not be queued")
+
+        table = view._home_view.content.content.controls[1].content.controls[0]
+        _find_button(table, "Apri").on_click(None)
+        view.stop_background_tasks()
+        page.updated = False
+        background_jobs[0]()
+
+        self.assertEqual(client.calls, [])
+        self.assertEqual(opened_paths, [])
+        self.assertFalse(page.updated)
+        self.assertTrue(view._erp_download_lock.acquire(blocking=False))
+        view._erp_download_lock.release()
+
+    def test_erp_download_queued_callback_after_shutdown_does_not_open_pdf(self) -> None:
+        page = FakePage()
+        service = _erp_download_service()
+        client = FakeInfinityDmsClient(_valid_pdf_bytes())
+        ui_jobs: list[object] = []
+        opened_paths: list[str] = []
+        view = MainView(
+            page,
+            general_preferences_service=service,
+            infinity_dms_client=client,
+        )
+        view.bind_actions(
+            on_open_document=lambda path: opened_paths.append(path),
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
+
+        view.refresh_erp_documents()
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+        table = view._home_view.content.content.controls[1].content.controls[0]
+        _find_button(table, "Apri").on_click(None)
+        temp_path = next(iter(view._erp_temp_files))
+        view.stop_background_tasks()
+        page.updated = False
+        ui_jobs[0]()
+
+        self.assertFalse(temp_path.exists())
+        self.assertEqual(opened_paths, [])
+        self.assertFalse(page.updated)
+        self.assertTrue(view._erp_download_lock.acquire(blocking=False))
+        view._erp_download_lock.release()
+
+    def test_erp_download_user_change_before_callback_discards_download(self) -> None:
+        page = FakePage()
+        service = _erp_download_service()
+        client = FakeInfinityDmsClient(_valid_pdf_bytes())
+        ui_jobs: list[object] = []
+        opened_paths: list[str] = []
+        view = MainView(
+            page,
+            general_preferences_service=service,
+            infinity_dms_client=client,
+        )
+        view.bind_actions(
+            on_open_document=lambda path: opened_paths.append(path),
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
+
+        view.refresh_erp_documents()
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+        table = view._home_view.content.content.controls[1].content.controls[0]
+        _find_button(table, "Apri").on_click(None)
+        temp_path = next(iter(view._erp_temp_files))
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            document_service_url="https://erp.example.test/soap",
+            company_id="SALAV",
+            basic_username="api-user",
+            basic_password="api-secret",
+            selected_user_id="21",
+            selected_user_name="Bianchi",
+        )
+        ui_jobs[0]()
+
+        self.assertFalse(temp_path.exists())
+        self.assertEqual(opened_paths, [])
+        self.assertEqual(
+            view._home_view.content.content.controls[2].value,
+            "Utente ERP cambiato: seleziona nuovamente il documento",
+        )
+
+    def test_erp_download_same_user_before_callback_still_opens_pdf(self) -> None:
+        page = FakePage()
+        service = _erp_download_service()
+        client = FakeInfinityDmsClient(_valid_pdf_bytes())
+        ui_jobs: list[object] = []
+        opened_paths: list[str] = []
+        view = MainView(
+            page,
+            general_preferences_service=service,
+            infinity_dms_client=client,
+        )
+        view.bind_actions(
+            on_open_document=lambda path: opened_paths.append(path),
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
+
+        view.refresh_erp_documents()
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+        table = view._home_view.content.content.controls[1].content.controls[0]
+        _find_button(table, "Apri").on_click(None)
+        ui_jobs[0]()
+
+        self.assertEqual(len(opened_paths), 1)
+        self.assertTrue(Path(opened_paths[0]).exists())
+        view.stop_background_tasks()
+
+    def test_local_pdf_display_does_not_create_erp_temp_session(self) -> None:
+        page = FakePage()
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            view = MainView(page, erp_temp_base_directory=base)
+
+            view.display_document(
+                filename="sample.pdf",
+                image_content=b"png",
+                image_width=100,
+                image_height=100,
+                page_number=1,
+                page_count=1,
+                zoom=1.0,
+            )
+
+            self.assertEqual(list(base.iterdir()), [])
+
+    def test_erp_document_incomplete_soap_configuration_hides_open_action(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            basic_username="api-user",
+            basic_password="api-secret",
+            selected_user_id="20",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            True,
+            "Caricati 1 documenti",
+            (ErpDocument("NOME.pdf", "", "", "DOC-1", "AUTH-1", "20"),),
+        )
+        client = FakeInfinityDmsClient(_valid_pdf_bytes())
+        view = MainView(
+            page,
+            general_preferences_service=service,
+            infinity_dms_client=client,
+        )
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+
+        view.refresh_erp_documents()
+        table = view._home_view.content.content.controls[1].content.controls[0]
+
+        self.assertEqual([column.label.value for column in table.columns], ["Nome documento", "Data"])
+        self.assertEqual(client.calls, [])
+
+    def test_empty_erp_document_list_shows_empty_state(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="20",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            True,
+            "Nessun documento da firmare",
+            (),
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        view.refresh_erp_documents()
+
+        content_column = view._home_view.content.content
+        self.assertEqual(
+            content_column.controls[1].content.value,
+            "Nessun documento da firmare",
+        )
+
+    def test_invalid_erp_document_schema_shows_error_state(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="20",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            False,
+            "Risposta ERP documenti non valida",
+            (),
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        view.refresh_erp_documents()
+
+        error_column = view._home_view.content.content
+        self.assertEqual(error_column.controls[1].value, "Risposta ERP documenti non valida")
+        self.assertEqual(_button_label(error_column.controls[2]), "Riprova")
+
+    def test_erp_document_error_keeps_pdf_open_command_available(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="20",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            False,
+            "Connessione ERP documenti fallita",
+            (),
+        )
+        view = MainView(page, general_preferences_service=service)
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
+
+        view.build()
+        view.refresh_erp_documents()
+
+        toolbar = page.controls[0].controls[0].content
+        self.assertEqual(toolbar.controls[1].controls[0].tooltip, "Apri")
+        error_column = view._home_view.content.content
+        self.assertEqual(error_column.controls[1].value, "Connessione ERP documenti fallita")
+        self.assertEqual(_button_label(error_column.controls[2]), "Riprova")
+
+    def test_auto_refresh_erp_documents_runs_only_after_user_confirmation(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.settings = SupabaseSettings(
+            auto_refresh_erp_documents=True,
+            erp_refresh_interval_seconds=30,
+        )
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="20",
+            selected_user_name="Romani",
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        self.assertFalse(view._refresh_erp_documents_if_auto_allowed())
+        self.assertEqual(service.erp_document_fetch_count, 0)
+
+        view._erp_session_user_confirmed = True
+
+        self.assertTrue(view._refresh_erp_documents_if_auto_allowed())
+        self.assertEqual(service.erp_document_fetch_count, 1)
+
+    def test_auto_refresh_erp_documents_is_skipped_while_pdf_is_open(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.settings = SupabaseSettings(
+            auto_refresh_erp_documents=True,
+            erp_refresh_interval_seconds=30,
+        )
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="20",
+            selected_user_name="Romani",
+        )
+        view = MainView(page, general_preferences_service=service)
+        view._erp_session_user_confirmed = True
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=100,
+            image_height=100,
+            page_number=1,
+            page_count=1,
+            zoom=1.0,
+        )
+
+        self.assertFalse(view._refresh_erp_documents_if_auto_allowed())
+        self.assertEqual(service.erp_document_fetch_count, 0)
 
     def test_pdf_mouse_wheel_changes_page_when_document_is_visible(self) -> None:
         page = FakePage()
@@ -197,7 +946,7 @@ class MainViewTests(unittest.TestCase):
         view.build()
 
         toolbar = page.controls[0].controls[0].content
-        self.assertEqual(page.title, "QSign by Queen Srl - queensrl.net")
+        self.assertEqual(page.title, "qSign by Queen Srl - queensrl.net")
         menu_bar = toolbar.controls[0]
         self.assertEqual(menu_bar.style.bgcolor, view._ft.Colors.TRANSPARENT)
         self.assertEqual(menu_bar.style.elevation, 0)
@@ -208,16 +957,20 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(menu_bar.controls[0].style.bgcolor, view._ft.Colors.TRANSPARENT)
         self.assertEqual(
             [control.content.value for control in menu_bar.controls[0].controls],
-            ["Apri", "Chiudi", "Salva", "Storico", "Template"],
+            ["Apri", "Chiudi", "Salva", "Storico", "Template", "Aggiungi zona firma"],
         )
         self.assertEqual(
             [control.width for control in menu_bar.controls[0].controls],
-            [180, 180, 180, 180, 180],
+            [180, 180, 180, 180, 180, 180],
         )
         self.assertEqual(
             [control.content.value for control in menu_bar.controls[1].controls],
-            ["Generali", "Utenti", "Certificato"],
+            ["Impostazioni", "Connessione ERP", "Certificato"],
         )
+
+        view.maximize_window()
+
+        self.assertTrue(page.window.maximized)
         self.assertEqual(menu_bar.controls[1].controls[0].width, 180)
         self.assertEqual(menu_bar.controls[1].controls[1].width, 180)
         self.assertEqual(menu_bar.controls[1].controls[2].width, 180)
@@ -235,6 +988,7 @@ class MainViewTests(unittest.TestCase):
                 "Salva",
                 "Chiudi",
                 "Storico",
+                "Aggiungi zona firma",
                 "Pagina precedente",
                 "Pagina successiva",
                 "Zoom -",
@@ -580,7 +1334,7 @@ class MainViewTests(unittest.TestCase):
             on_next=lambda: None,
             on_zoom_in=lambda: None,
             on_zoom_out=lambda: None,
-            on_signature_area_click=lambda: clicked.append(True),
+            on_signature_area_click=lambda target_id: clicked.append(target_id),
         )
         view.set_manual_signature_mode(True)
 
@@ -609,7 +1363,50 @@ class MainViewTests(unittest.TestCase):
         self.assertFalse(overlay.ignore_interactions)
         self.assertIsNotNone(overlay.on_click)
         overlay.on_click(None)
-        self.assertEqual(clicked, [True])
+        self.assertEqual(clicked, [None])
+
+    def test_multi_signature_area_stays_clickable_during_manual_correction(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        clicked = []
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+            on_signature_area_click=lambda target_id: clicked.append(target_id),
+        )
+        view.set_manual_signature_mode(True)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=200,
+            image_height=300,
+            page_number=1,
+            page_count=1,
+            zoom=1.0,
+            anchor_overlays=(
+                SimpleNamespace(
+                    left=10,
+                    top=20,
+                    width=80,
+                    height=40,
+                    label="Zona firma 2",
+                    signature_content=None,
+                    signature_media_type="image/svg+xml",
+                    target_id="manual-signature-2",
+                ),
+            ),
+        )
+
+        overlay = view._pdf_stack.controls[1]
+        self.assertFalse(overlay.ignore_interactions)
+        self.assertIsNotNone(overlay.on_click)
+        overlay.on_click(None)
+        self.assertEqual(clicked, ["manual-signature-2"])
 
     def test_signature_overlay_is_rendered_inside_signature_rectangle(self) -> None:
         page = FakePage()
@@ -787,21 +1584,50 @@ class MainViewTests(unittest.TestCase):
         view._admin_mode = True
 
         view.show_general_preferences()
-        controls = page.dialog.content.content.controls
-        controls[1].value = "https://demo.supabase.co"
-        controls[2].value = "secret"
-        controls[3].value = "SaluteLavoro"
-        controls[4].value = True
-        controls[5].value = True
-        controls[7].value = "wacom"
-        controls[8].value = True
-        controls[9].controls[0].on_click(None)
+        supabase_tab, options_tab, signature_tab = _dialog_tab_contents(page.dialog)
+        _find_control(supabase_tab, label="URL progetto Supabase").value = (
+            "https://demo.supabase.co"
+        )
+        _find_control(supabase_tab, label="Password/API key Supabase").value = "secret"
+        _find_control(supabase_tab, label="Tabella template Supabase").value = (
+            "SaluteLavoro"
+        )
+        _find_control(
+            options_tab,
+            label="Sincronizza automaticamente i template all'avvio",
+        ).value = True
+        _find_control(options_tab, label="Salvataggio automatico").value = True
+        _find_control(
+            options_tab,
+            label="Aggiorna automaticamente documenti ERP",
+        ).value = True
+        _find_control(
+            options_tab,
+            label="Intervallo aggiornamento documenti ERP (secondi)",
+        ).value = "45"
+        _find_control(options_tab, label="Mostra testo nel riquadro firma").value = True
+        _find_control(signature_tab, label="Metodo firma").value = "wacom"
+        self.assertEqual(
+            [
+                control.label
+                for control in options_tab.content.controls
+                if hasattr(control, "label")
+            ],
+            [
+                "Sincronizza automaticamente i template all'avvio",
+                "Salvataggio automatico",
+                "Mostra testo nel riquadro firma",
+                "Aggiorna automaticamente documenti ERP",
+                "Intervallo aggiornamento documenti ERP (secondi)",
+            ],
+        )
+        _find_button(supabase_tab, "Test").on_click(None)
 
         self.assertEqual(
-            controls[10].value,
+            _general_preferences_result(page.dialog).content.value,
             "Connessione Supabase riuscita",
         )
-        controls[9].controls[3].on_click(None)
+        page.dialog.actions[1].on_click(None)
 
         self.assertEqual(
             service.settings,
@@ -811,11 +1637,16 @@ class MainViewTests(unittest.TestCase):
                 table_name="SaluteLavoro",
                 auto_sync_templates_on_startup=True,
                 auto_save_signed_documents=True,
+                auto_refresh_erp_documents=True,
+                erp_refresh_interval_seconds=45,
                 show_signature_text=True,
                 signature_capture_mode="wacom",
             ),
         )
-        self.assertEqual(controls[10].value, "Impostazioni salvate")
+        self.assertEqual(
+            _general_preferences_result(page.dialog).content.value,
+            "Impostazioni salvate",
+        )
 
     def test_general_preferences_save_disabled_signature_text(self) -> None:
         page = FakePage()
@@ -833,11 +1664,17 @@ class MainViewTests(unittest.TestCase):
         view._admin_mode = True
 
         view.show_general_preferences()
-        controls = page.dialog.content.content.controls
-        controls[4].value = "false"
-        controls[5].value = "false"
-        controls[8].value = "false"
-        controls[9].controls[3].on_click(None)
+        options_tab = _dialog_tab_contents(page.dialog)[1]
+        _find_control(
+            options_tab,
+            label="Sincronizza automaticamente i template all'avvio",
+        ).value = "false"
+        _find_control(options_tab, label="Salvataggio automatico").value = "false"
+        _find_control(
+            options_tab,
+            label="Mostra testo nel riquadro firma",
+        ).value = "false"
+        page.dialog.actions[1].on_click(None)
 
         self.assertFalse(service.settings.auto_sync_templates_on_startup)
         self.assertFalse(service.settings.auto_save_signed_documents)
@@ -851,25 +1688,27 @@ class MainViewTests(unittest.TestCase):
         view._admin_mode = True
 
         view.show_general_preferences()
-        controls = page.dialog.content.content.controls
-        controls[1].value = "https://demo.supabase.co"
-        controls[2].value = "secret"
-        controls[3].value = "Meddoc"
-        controls[9].controls[1].on_click(None)
+        supabase_tab = _dialog_tab_contents(page.dialog)[0]
+        _find_control(supabase_tab, label="URL progetto Supabase").value = (
+            "https://demo.supabase.co"
+        )
+        _find_control(supabase_tab, label="Password/API key Supabase").value = "secret"
+        _find_control(supabase_tab, label="Tabella template Supabase").value = "Meddoc"
+        _find_button(supabase_tab, "Verifica tabella").on_click(None)
 
         self.assertEqual(
-            controls[10].value,
+            _general_preferences_result(page.dialog).content.value,
             (
                 "Tabella template Supabase 'Meddoc' non trovata. "
                 "Premi 'Crea tabella' per duplicarla da SaluteLavoro."
             ),
         )
 
-        controls[9].controls[2].on_click(None)
+        _find_button(supabase_tab, "Crea tabella").on_click(None)
 
         self.assertEqual(service.created_table_settings.table_name, "Meddoc")
         self.assertEqual(
-            controls[10].value,
+            _general_preferences_result(page.dialog).content.value,
             "Tabella template Supabase 'Meddoc' pronta",
         )
 
@@ -886,18 +1725,30 @@ class MainViewTests(unittest.TestCase):
         view = MainView(page, general_preferences_service=service)
 
         view.show_general_preferences()
-        controls = page.dialog.content.content.controls
+        options_tab, signature_tab = _dialog_tab_contents(page.dialog)
 
-        labels = [getattr(control, "label", "") for control in controls]
-        self.assertNotIn("URL progetto Supabase", labels)
-        self.assertNotIn("Password/API key Supabase", labels)
-        self.assertNotIn("Tabella template Supabase", labels)
-        self.assertEqual([_button_label(button) for button in controls[5].controls], ["Salva"])
+        with self.assertRaises(AssertionError):
+            _find_control(page.dialog.content, label="URL progetto Supabase")
+        with self.assertRaises(AssertionError):
+            _find_control(page.dialog.content, label="Password/API key Supabase")
+        with self.assertRaises(AssertionError):
+            _find_control(page.dialog.content, label="Tabella template Supabase")
+        self.assertEqual(
+            [
+                label
+                for label in [_button_label(button) for button in page.dialog.actions]
+                if label
+            ],
+            ["Salva", "Chiudi"],
+        )
 
-        controls[1].value = True
-        controls[2].value = True
-        controls[4].value = "wacom"
-        controls[5].controls[0].on_click(None)
+        _find_control(
+            options_tab,
+            label="Sincronizza automaticamente i template all'avvio",
+        ).value = True
+        _find_control(options_tab, label="Salvataggio automatico").value = True
+        _find_control(signature_tab, label="Metodo firma").value = "wacom"
+        page.dialog.actions[1].on_click(None)
 
         self.assertEqual(
             service.settings,
@@ -921,38 +1772,51 @@ class MainViewTests(unittest.TestCase):
         layout = page.dialog.content.content.controls
         connection_controls = layout[0].content.controls
         users_controls = layout[2].content.controls
-        connection_controls[1].value = "https://erp.example.test/users"
-        connection_controls[2].value = "api-user"
-        connection_controls[3].value = "api-secret"
-        connection_controls[4].controls[1].on_click(None)
+        connection_controls[0].value = "https://erp.example.test/users"
+        connection_controls[1].value = "https://erp.example.test/documents"
+        connection_controls[2].value = "https://erp.example.test/soap"
+        connection_controls[3].value = "SALAV"
+        connection_controls[4].value = "api-user"
+        connection_controls[5].value = "api-secret"
+        connection_controls[6].controls[1].on_click(None)
 
-        users_list = users_controls[4]
-        self.assertEqual(connection_controls[5].value, "Caricati 1 utenti")
-        users_list.controls[0].controls[2].on_click(None)
+        users_list = users_controls[5]
+        self.assertEqual(connection_controls[7].value, "Caricati 1 utenti")
+        users_controls[2].value = True
+        users_list.controls[1].controls[2].on_click(None)
         self.assertEqual(users_controls[1].content.value, "Mario Rossi (42)")
+        self.assertEqual(service.erp_document_fetch_count, 1)
 
         self.assertEqual(
             service.erp_settings,
             ErpUserSettings(
                 users_url="https://erp.example.test/users",
+                documents_url="https://erp.example.test/documents",
+                document_service_url="https://erp.example.test/soap",
+                company_id="SALAV",
                 basic_username="api-user",
                 basic_password="api-secret",
                 selected_user_id="42",
                 selected_user_name="Mario Rossi",
+                persistent_user=True,
             ),
         )
         self.assertEqual(view._active_user.value, "Utente: Mario Rossi")
-        self.assertEqual(connection_controls[5].value, "Utente salvato: Mario Rossi")
+        self.assertEqual(connection_controls[7].value, "Utente salvato: Mario Rossi")
         self.assertEqual(
             service.session_user_logs,
             [
                 (
                     ErpUserSettings(
                         users_url="https://erp.example.test/users",
+                        documents_url="https://erp.example.test/documents",
+                        document_service_url="https://erp.example.test/soap",
+                        company_id="SALAV",
                         basic_username="api-user",
                         basic_password="api-secret",
                         selected_user_id="42",
                         selected_user_name="Mario Rossi",
+                        persistent_user=True,
                     ),
                     "user_preferences_selection",
                 )
@@ -973,16 +1837,159 @@ class MainViewTests(unittest.TestCase):
         layout = page.dialog.content.content.controls
         connection_controls = layout[0].content.controls
         users_controls = layout[2].content.controls
-        connection_controls[1].value = "https://erp.example.test/users"
-        connection_controls[2].value = "api-user"
-        connection_controls[3].value = "api-secret"
-        connection_controls[4].controls[0].on_click(None)
+        connection_controls[0].value = "https://erp.example.test/users"
+        connection_controls[1].value = "https://erp.example.test/documents"
+        connection_controls[4].value = "api-user"
+        connection_controls[5].value = "api-secret"
+        connection_controls[6].controls[0].on_click(None)
 
         self.assertEqual(
-            connection_controls[5].value,
+            connection_controls[7].value,
             "Connessione utenti riuscita: 1 utenti disponibili",
         )
-        self.assertEqual(users_controls[4].controls, [])
+        self.assertEqual(users_controls[5].controls, [])
+
+    def test_user_preferences_load_users_runs_in_background(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            users_url="https://erp.example.test/users",
+            basic_username="api-user",
+            basic_password="api-secret",
+        )
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+
+        view.show_user_preferences()
+        connection_controls = page.dialog.content.content.controls[0].content.controls
+        users_controls = page.dialog.content.content.controls[2].content.controls
+        test_button = connection_controls[6].controls[0]
+        load_button = connection_controls[6].controls[1]
+        load_button.on_click(None)
+
+        self.assertEqual(service.erp_user_fetch_count, 0)
+        self.assertTrue(load_button.disabled)
+        self.assertTrue(test_button.disabled)
+        self.assertEqual(connection_controls[7].value, "Caricamento utenti...")
+
+        background_jobs[0]()
+        ui_jobs[0]()
+
+        self.assertFalse(load_button.disabled)
+        self.assertFalse(test_button.disabled)
+        self.assertEqual(len(users_controls[5].controls), 2)
+        self.assertEqual(connection_controls[7].value, "Caricati 1 utenti")
+
+    def test_user_preferences_test_users_runs_in_background(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            users_url="https://erp.example.test/users",
+            basic_username="api-user",
+            basic_password="api-secret",
+        )
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+
+        view.show_user_preferences()
+        connection_controls = page.dialog.content.content.controls[0].content.controls
+        users_controls = page.dialog.content.content.controls[2].content.controls
+        test_button = connection_controls[6].controls[0]
+        load_button = connection_controls[6].controls[1]
+        test_button.on_click(None)
+
+        self.assertEqual(service.erp_user_fetch_count, 0)
+        self.assertTrue(test_button.disabled)
+        self.assertTrue(load_button.disabled)
+        self.assertEqual(connection_controls[7].value, "Verifica in corso...")
+
+        background_jobs[0]()
+        ui_jobs[0]()
+
+        self.assertFalse(test_button.disabled)
+        self.assertFalse(load_button.disabled)
+        self.assertEqual(
+            connection_controls[7].value,
+            "Connessione utenti riuscita: 1 utenti disponibili",
+        )
+        self.assertEqual(users_controls[5].controls, [])
+
+    def test_user_preferences_result_after_close_is_ignored(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+
+        view.show_user_preferences()
+        connection_controls = page.dialog.content.content.controls[0].content.controls
+        connection_controls[6].controls[1].on_click(None)
+        page.dialog.actions[1].on_click(None)
+        page.updated = False
+        background_jobs[0]()
+        ui_jobs[0]()
+
+        self.assertFalse(page.updated)
+
+    def test_user_preferences_stale_users_result_is_ignored(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_user_results = [
+            ErpUsersResult(True, "Caricati 1 utenti", (ErpUser("1", "Old"),)),
+            ErpUsersResult(True, "Caricati 1 utenti", (ErpUser("2", "New"),)),
+        ]
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+
+        view.show_user_preferences()
+        connection_controls = page.dialog.content.content.controls[0].content.controls
+        users_controls = page.dialog.content.content.controls[2].content.controls
+        load_button = connection_controls[6].controls[1]
+        load_button.on_click(None)
+        load_button.on_click(None)
+
+        background_jobs[0]()
+        ui_jobs[0]()
+        background_jobs[1]()
+        ui_jobs[1]()
+
+        self.assertEqual(len(users_controls[5].controls), 2)
+        self.assertEqual(users_controls[5].controls[1].controls[0].value, "New")
+
+    def test_user_preferences_worker_exception_is_controlled(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_users_error = RuntimeError("api-secret should not leak")
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
+
+        view.show_user_preferences()
+        connection_controls = page.dialog.content.content.controls[0].content.controls
+        connection_controls[6].controls[1].on_click(None)
+        background_jobs[0]()
+        ui_jobs[0]()
+
+        self.assertEqual(connection_controls[7].value, "Caricamento utenti ERP fallito")
+        self.assertNotIn("api-secret", connection_controls[7].value)
 
     def test_user_preferences_hides_api_settings_for_operator(self) -> None:
         page = FakePage()
@@ -1001,17 +2008,84 @@ class MainViewTests(unittest.TestCase):
 
         labels = [getattr(control, "label", "") for control in connection_controls]
         self.assertNotIn("URL lista utenti ERP", labels)
+        self.assertNotIn("URL servizio documentale SOAP", labels)
+        self.assertNotIn("Company ID", labels)
         self.assertNotIn("Utente Basic Auth", labels)
         self.assertNotIn("Password Basic Auth", labels)
         self.assertEqual(
-            [_button_label(button) for button in connection_controls[2].controls],
+            [_button_label(button) for button in connection_controls[1].controls],
             ["Carica utenti"],
         )
+        self.assertEqual(
+            [_button_label(button) for button in page.dialog.actions],
+            ["Salva", "Chiudi"],
+        )
 
-        connection_controls[2].controls[0].on_click(None)
+        connection_controls[1].controls[0].on_click(None)
 
-        self.assertEqual(connection_controls[3].value, "Caricati 1 utenti")
-        self.assertEqual(len(users_controls[4].controls), 1)
+        self.assertEqual(connection_controls[2].value, "Caricati 1 utenti")
+        self.assertEqual(len(users_controls[5].controls), 2)
+
+    def test_user_preferences_operator_can_save_persistent_user_flag(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            users_url="https://erp.example.test/users",
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="42",
+            selected_user_name="Mario Rossi",
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        view.show_user_preferences()
+        users_controls = page.dialog.content.content.controls[2].content.controls
+        users_controls[2].value = True
+        page.dialog.actions[0].on_click(None)
+
+        self.assertTrue(service.erp_settings.persistent_user)
+        self.assertEqual(page.dialog.content.content.controls[0].content.controls[2].value, "Impostazioni ERP salvate")
+
+        view.show_user_preferences()
+        users_controls = page.dialog.content.content.controls[2].content.controls
+        self.assertTrue(users_controls[2].value)
+
+    def test_user_preferences_can_clear_selected_erp_user(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            users_url="https://erp.example.test/users",
+            documents_url="https://erp.example.test/documents",
+            basic_username="api-user",
+            basic_password="api-secret",
+            selected_user_id="42",
+            selected_user_name="Mario Rossi",
+        )
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+
+        view.show_user_preferences()
+        layout = page.dialog.content.content.controls
+        connection_controls = layout[0].content.controls
+        users_controls = layout[2].content.controls
+        connection_controls[6].controls[1].on_click(None)
+        users_list = users_controls[5]
+
+        users_list.controls[0].controls[2].on_click(None)
+
+        self.assertEqual(
+            service.erp_settings,
+            ErpUserSettings(
+                users_url="https://erp.example.test/users",
+                documents_url="https://erp.example.test/documents",
+                company_id="SALAV",
+                basic_username="api-user",
+                basic_password="api-secret",
+            ),
+        )
+        self.assertEqual(users_controls[1].content.value, "Nessun utente selezionato")
+        self.assertEqual(view._active_user.value, "")
+        self.assertEqual(connection_controls[7].value, "Nessun utente selezionato")
+        self.assertEqual(service.erp_document_fetch_count, 0)
 
     def test_startup_user_confirmation_is_skipped_without_selected_user(self) -> None:
         page = FakePage()
@@ -1022,6 +2096,21 @@ class MainViewTests(unittest.TestCase):
 
         self.assertFalse(shown)
         self.assertFalse(hasattr(page, "dialog"))
+
+    def test_startup_user_confirmation_is_shown_with_erp_url_without_selected_user(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            users_url="https://erp.example.test/users",
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        shown = view.show_startup_user_confirmation()
+
+        self.assertTrue(shown)
+        self.assertEqual(page.dialog.title.value, "Utente operativo")
+        self.assertEqual(page.dialog.content.controls[1].value, "Nessun utente selezionato")
+        self.assertEqual([_button_label(button) for button in page.dialog.actions], ["Seleziona utente"])
 
     def test_startup_user_confirmation_can_be_confirmed(self) -> None:
         page = FakePage()
@@ -1041,6 +2130,7 @@ class MainViewTests(unittest.TestCase):
         page.dialog.actions[1].on_click(None)
 
         self.assertEqual(page.pop_count, 1)
+        self.assertEqual(service.erp_document_fetch_count, 0)
         self.assertEqual(
             service.session_user_logs,
             [
@@ -1052,6 +2142,47 @@ class MainViewTests(unittest.TestCase):
                     "startup_confirmation",
                 )
             ],
+        )
+
+    def test_startup_user_confirmation_refreshes_documents_after_confirm(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="3",
+            selected_user_name="Ghinassi",
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        view.show_startup_user_confirmation()
+
+        self.assertEqual(service.erp_document_fetch_count, 0)
+
+        page.dialog.actions[1].on_click(None)
+
+        self.assertEqual(service.erp_document_fetch_count, 1)
+        self.assertEqual(service.erp_document_fetch_settings.selected_user_id, "3")
+
+    def test_startup_user_persistent_skips_confirmation_and_loads_documents(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="3",
+            selected_user_name="Ghinassi",
+            persistent_user=True,
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        shown = view.show_startup_user_confirmation()
+
+        self.assertFalse(shown)
+        self.assertFalse(hasattr(page, "dialog"))
+        self.assertEqual(view._active_user.value, "Utente: Ghinassi")
+        self.assertEqual(service.erp_document_fetch_count, 1)
+        self.assertEqual(
+            service.session_user_logs,
+            [(service.erp_settings, "startup_persistent_user")],
         )
 
     def test_startup_user_confirmation_can_open_user_preferences(self) -> None:
@@ -1067,7 +2198,7 @@ class MainViewTests(unittest.TestCase):
         page.dialog.actions[0].on_click(None)
 
         self.assertEqual(page.pop_count, 1)
-        self.assertEqual(page.dialog.title.value, "Utenti")
+        self.assertEqual(page.dialog.title.value, "Connessione ERP")
 
     def test_certificate_preferences_do_not_show_global_signature_reason_editor(
         self,
@@ -1154,6 +2285,7 @@ class MainViewTests(unittest.TestCase):
 
         view.show_admin_unlock_dialog()
         controls = page.dialog.content.content.controls
+        self.assertTrue(controls[1].autofocus)
         controls[1].value = "admin-secret"
         controls[2].value = "admin-secret"
         page.dialog.actions[1].on_click(None)
@@ -1170,6 +2302,7 @@ class MainViewTests(unittest.TestCase):
 
         view.show_admin_unlock_dialog()
         controls = page.dialog.content.content.controls
+        self.assertTrue(controls[1].autofocus)
         controls[1].value = "wrong"
         page.dialog.actions[1].on_click(None)
 
@@ -1209,6 +2342,96 @@ def _event(x: float, y: float) -> SimpleNamespace:
 def _button_label(button: object) -> str:
     content = getattr(button, "content", "")
     return str(getattr(content, "value", content))
+
+
+def _dialog_tab_contents(dialog: object) -> list[object]:
+    tabs = dialog.content.content
+    return tabs.content.controls[1].controls
+
+
+def _find_control(root: object, *, label: str) -> object:
+    for control in _walk_controls(root):
+        if getattr(control, "label", None) == label:
+            return control
+    raise AssertionError(f"Control with label {label!r} not found")
+
+
+def _find_button(root: object, label: str) -> object:
+    for control in _walk_controls(root):
+        if _button_label(control) == label:
+            return control
+    raise AssertionError(f"Button {label!r} not found")
+
+
+def _erp_refresh_button(view: MainView) -> object:
+    return view._home_view.content.content.controls[0].controls[2]
+
+
+def _erp_documents_body(view: MainView) -> object:
+    return view._home_view.content.content.controls[1].content
+
+
+def _valid_pdf_bytes() -> bytes:
+    global VALID_PDF_BYTES
+    if VALID_PDF_BYTES:
+        return VALID_PDF_BYTES
+    document = pymupdf.open()
+    try:
+        page = document.new_page()
+        page.insert_text((72, 72), "qSign ERP PDF")
+        VALID_PDF_BYTES = document.tobytes()
+        return VALID_PDF_BYTES
+    finally:
+        document.close()
+
+
+def _erp_download_service() -> "FakeGeneralPreferencesService":
+    service = FakeGeneralPreferencesService()
+    service.erp_settings = ErpUserSettings(
+        documents_url="https://erp.example.test/documents",
+        document_service_url="https://erp.example.test/soap",
+        company_id="SALAV",
+        basic_username="api-user",
+        basic_password="api-secret",
+        selected_user_id="20",
+        selected_user_name="Romani",
+    )
+    service.erp_documents_result = ErpDocumentsResult(
+        True,
+        "Caricati 1 documenti",
+        (
+            ErpDocument(
+                "NOME.pdf",
+                "2026-07-16 09:29:57",
+                "",
+                "DOC-1",
+                "AUTH-1",
+                "20",
+            ),
+        ),
+    )
+    return service
+
+
+def _general_preferences_result(dialog: object) -> object:
+    return dialog.actions[0]
+
+
+def _walk_controls(root: object) -> list[object]:
+    controls = [root]
+    found: list[object] = []
+    while controls:
+        control = controls.pop(0)
+        found.append(control)
+        for attr in ("content", "controls", "tabs", "rows", "cells"):
+            children = getattr(control, attr, None)
+            if children is None or isinstance(children, str):
+                continue
+            if isinstance(children, list):
+                controls.extend(children)
+            else:
+                controls.append(children)
+    return found
 
 
 class FakeCertificateService:
@@ -1276,6 +2499,20 @@ class FakeGeneralPreferencesService:
     def __init__(self) -> None:
         self.settings = SupabaseSettings()
         self.erp_settings = ErpUserSettings()
+        self.erp_documents_result = ErpDocumentsResult(True, "Nessun documento da firmare", ())
+        self.erp_document_results: list[ErpDocumentsResult] = []
+        self.erp_users_result = ErpUsersResult(
+            True,
+            "Caricati 1 utenti",
+            (ErpUser("42", "Mario Rossi"),),
+        )
+        self.erp_user_results: list[ErpUsersResult] = []
+        self.erp_users_error: Exception | None = None
+        self.erp_documents_error: Exception | None = None
+        self.erp_document_fetch_count = 0
+        self.erp_document_fetch_settings = ErpUserSettings()
+        self.erp_user_fetch_count = 0
+        self.erp_user_fetch_settings = ErpUserSettings()
         self.created_table_settings = SupabaseSettings()
         self.admin_password = ""
         self.session_user_logs: list[tuple[ErpUserSettings, str]] = []
@@ -1346,11 +2583,51 @@ class FakeGeneralPreferencesService:
     def fetch_erp_users(
         self, settings: ErpUserSettings | None = None
     ) -> ErpUsersResult:
-        return ErpUsersResult(
-            True,
-            "Caricati 1 utenti",
-            (ErpUser("42", "Mario Rossi"),),
+        self.erp_user_fetch_count += 1
+        self.erp_user_fetch_settings = settings or self.erp_settings
+        if self.erp_users_error is not None:
+            raise self.erp_users_error
+        if self.erp_user_results:
+            return self.erp_user_results.pop(0)
+        return self.erp_users_result
+
+    def fetch_erp_documents(
+        self, settings: ErpUserSettings | None = None
+    ) -> ErpDocumentsResult:
+        self.erp_document_fetch_count += 1
+        self.erp_document_fetch_settings = settings or self.erp_settings
+        if self.erp_documents_error is not None:
+            raise self.erp_documents_error
+        if self.erp_document_results:
+            return self.erp_document_results.pop(0)
+        return self.erp_documents_result
+
+
+class FakeInfinityDmsClient:
+    def __init__(self, content: bytes | None = None, error: Exception | None = None) -> None:
+        self.content = content if content is not None else _valid_pdf_bytes()
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+
+    def download_document(
+        self,
+        *,
+        service_url: str,
+        credentials: object,
+        document_id: str,
+        auth_code: str,
+    ) -> bytes:
+        self.calls.append(
+            {
+                "service_url": service_url,
+                "credentials": credentials,
+                "document_id": document_id,
+                "auth_code": auth_code,
+            }
         )
+        if self.error is not None:
+            raise self.error
+        return self.content
 
 
 class FakeTemplateSyncResult:

@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import threading
 
-APP_TITLE = "QSign by Queen Srl - queensrl.net"
+APP_TITLE = "qSign by Queen Srl - queensrl.net"
 
 
 def run() -> None:

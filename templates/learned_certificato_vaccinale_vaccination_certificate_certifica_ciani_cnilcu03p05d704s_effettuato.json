@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0",
-  "template_id": "learned_trattamento_personali_data___________informa_amento_sensibili_documento_sensi",
-  "code": "LEARNED_TRATTAMENTO_PERSONALI_DATA___________INFORMA_AMENTO_SENSIBILI_DOCUMENTO_SENSI",
-  "name": "Template provvisorio learned_trattamento_personali_data___________informa_amento_sensibili_documento_sensi",
+  "template_id": "learned_certificato_vaccinale_vaccination_certificate_certifica_ciani_cnilcu03p05d704s_effettuato",
+  "code": "LEARNED_CERTIFICATO_VACCINALE_VACCINATION_CERTIFICATE_CERTIFICA_CIANI_CNILCU03P05D704S_EFFETTUATO",
+  "name": "Template provvisorio learned_certificato_vaccinale_vaccination_certificate_certifica_ciani_cnilcu03p05d704s_effettuato",
   "description": "Template creato dal primo flusso manuale QSign.",
   "document_type": "manual_signature_flow",
   "version": "0.1.0",
@@ -13,7 +13,7 @@
     {
       "rule_id": "manual-filename-stem",
       "rule_type": "literal",
-      "expression": "851011_sn7aopkbcc",
+      "expression": "851010_rdjhkpra8u",
       "scope": "document",
       "required": false,
       "weight": 0.25
@@ -21,7 +21,7 @@
     {
       "rule_id": "manual-recognition-phrase",
       "rule_type": "literal",
-      "expression": "Salute e Lavoro Società Coopera va Ambulatori Via Meucci, 18 - 47122 Forlì (FC) Tel. 0543 798337 Via G. Per cari, 2/A - 47035 Salute e Lavoro Società Coopera va",
+      "expression": "CERTIFICATO VACCINALE / Vaccination Certificate Si certifica che CIANI LUCA nato il 05/09/2003 CF CNILCU03P05D704S ha effettuato le seguenti vaccinazioni: This ",
       "scope": "document",
       "required": false,
       "weight": 6.0
@@ -29,7 +29,7 @@
     {
       "rule_id": "manual-structural-signature",
       "rule_type": "literal",
-      "expression": "trattamento personali data__________ informa amento sensibili documento sensi regolamento titolare avente it03455980403 osservanza quanto previsto siamo",
+      "expression": "certificato vaccinale vaccination certificate certifica ciani cnilcu03p05d704s effettuato seguenti vaccinazioni certify fiscal vaccinated infanrix 21h0122 21h0139",
       "scope": "document",
       "required": true,
       "weight": 10.0
@@ -37,7 +37,7 @@
     {
       "rule_id": "manual-visual-signature",
       "rule_type": "visual_hash",
-      "expression": "000000003ffffffc3f847c443834fc7c3ffffffc0ffffff000003fc000003f8000003f001fc316301ffffff81ff8000007e4000007fffb581fe000001ffffff81ffffff81fffff781ffb80000ffffff807d7f00007ffff681ffe00001ffffff80ef7ce9007fe8d201fff57101af685f01fffec60066000000000000000000000",
+      "expression": "000000007fff3e007fff3fe07fff0000007ffe007fff00007ffff0007c00000071ef739c0000210861ef739c01ef739c7067318c79ef73887062308071ef700060e730007dce700078e7300071ce000000e7000071ce000000e7000061ef0000008400007def00000000000079e0000040000000000000003ff8000200000000",
       "scope": "document",
       "required": true,
       "weight": 30.0
@@ -45,7 +45,7 @@
     {
       "rule_id": "manual-keyword-1",
       "rule_type": "literal",
-      "expression": "trattamento",
+      "expression": "certificato",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -53,7 +53,7 @@
     {
       "rule_id": "manual-keyword-2",
       "rule_type": "literal",
-      "expression": "personali",
+      "expression": "vaccinale",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -61,7 +61,7 @@
     {
       "rule_id": "manual-keyword-3",
       "rule_type": "literal",
-      "expression": "data__________",
+      "expression": "vaccination",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -69,7 +69,7 @@
     {
       "rule_id": "manual-keyword-4",
       "rule_type": "literal",
-      "expression": "informa",
+      "expression": "certificate",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -77,7 +77,7 @@
     {
       "rule_id": "manual-keyword-5",
       "rule_type": "literal",
-      "expression": "amento",
+      "expression": "certifica",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -85,7 +85,7 @@
     {
       "rule_id": "manual-keyword-6",
       "rule_type": "literal",
-      "expression": "sensibili",
+      "expression": "ciani",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -93,7 +93,7 @@
     {
       "rule_id": "manual-keyword-7",
       "rule_type": "literal",
-      "expression": "documento",
+      "expression": "cnilcu03p05d704s",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -101,7 +101,7 @@
     {
       "rule_id": "manual-keyword-8",
       "rule_type": "literal",
-      "expression": "sensi",
+      "expression": "effettuato",
       "scope": "document",
       "required": false,
       "weight": 1.25
@@ -115,24 +115,11 @@
       "anchor_id": "manual",
       "side": "manual",
       "alignment": "manual",
-      "x_offset": 376.5650329589844,
-      "y_offset": 479.9052734375,
-      "width": 110.0,
-      "height": 40.0,
-      "page_index": 1,
-      "required": true
-    },
-    {
-      "placement_id": "manual-signature-2",
-      "role": "signer",
-      "anchor_id": "manual",
-      "side": "manual",
-      "alignment": "manual",
-      "x_offset": 97.5,
-      "y_offset": 453.0,
-      "width": 137.0,
-      "height": 80.0,
-      "page_index": 1,
+      "x_offset": 326.5,
+      "y_offset": 561.0,
+      "width": 205.0,
+      "height": 121.0,
+      "page_index": 0,
       "required": true
     }
   ],
