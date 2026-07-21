@@ -60,10 +60,12 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                     table_name="SaluteLavoro",
                     auto_sync_templates_on_startup=True,
                     auto_save_signed_documents=True,
+                    list_erp_documents=True,
                     auto_refresh_erp_documents=True,
                     erp_refresh_interval_seconds=45,
                     show_signature_text=True,
                     signature_capture_mode="wacom",
+                    local_erp_port=55123,
                 )
             )
 
@@ -84,12 +86,51 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                     table_name="SaluteLavoro",
                     auto_sync_templates_on_startup=True,
                     auto_save_signed_documents=True,
+                    list_erp_documents=True,
                     auto_refresh_erp_documents=True,
                     erp_refresh_interval_seconds=45,
                     show_signature_text=True,
                     signature_capture_mode="wacom",
+                    local_erp_port=55123,
                 ),
             )
+
+    def test_local_erp_port_defaults_and_is_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            self.assertEqual(service.get_supabase_settings().local_erp_port, 9091)
+
+            service.save_supabase_settings(SupabaseSettings(local_erp_port=80))
+
+            self.assertEqual(service.get_supabase_settings().local_erp_port, 9091)
+
+    def test_disabled_erp_document_list_forces_refresh_options_off(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            service.save_supabase_settings(
+                SupabaseSettings(
+                    list_erp_documents=False,
+                    auto_refresh_erp_documents=True,
+                    erp_refresh_interval_seconds=45,
+                )
+            )
+
+            settings = service.get_supabase_settings()
+            self.assertFalse(settings.list_erp_documents)
+            self.assertFalse(settings.auto_refresh_erp_documents)
+            self.assertEqual(settings.erp_refresh_interval_seconds, 0)
 
     def test_supabase_settings_persist_disabled_signature_text(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -342,10 +383,12 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                     table_name="Meddoc",
                     auto_sync_templates_on_startup=True,
                     auto_save_signed_documents=True,
+                    list_erp_documents=True,
                     auto_refresh_erp_documents=True,
                     erp_refresh_interval_seconds=10,
                     show_signature_text=True,
                     signature_capture_mode="wacom",
+                    local_erp_port=55123,
                 )
             )
 
@@ -354,14 +397,18 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             self.assertEqual(context["table_name"], "Meddoc")
             self.assertTrue(context["auto_save_signed_documents"])
             self.assertTrue(context["auto_sync_templates_on_startup"])
+            self.assertTrue(context["list_erp_documents"])
             self.assertTrue(context["auto_refresh_erp_documents"])
             self.assertEqual(context["erp_refresh_interval_seconds"], 30)
             self.assertTrue(context["show_signature_text"])
             self.assertEqual(context["signature_capture_mode"], "wacom")
+            self.assertEqual(context["local_erp_port"], 55123)
             self.assertIn("auto_save_signed_documents", context["changed_fields"])
+            self.assertIn("list_erp_documents", context["changed_fields"])
             self.assertIn("auto_refresh_erp_documents", context["changed_fields"])
             self.assertIn("erp_refresh_interval_seconds", context["changed_fields"])
             self.assertIn("signature_capture_mode", context["changed_fields"])
+            self.assertIn("local_erp_port", context["changed_fields"])
             self.assertNotIn("https://demo.supabase.co", str(context))
             self.assertNotIn("secret", str(context))
 

@@ -803,6 +803,7 @@ class MainViewTests(unittest.TestCase):
         page = FakePage()
         service = FakeGeneralPreferencesService()
         service.settings = SupabaseSettings(
+            list_erp_documents=True,
             auto_refresh_erp_documents=True,
             erp_refresh_interval_seconds=30,
         )
@@ -825,6 +826,7 @@ class MainViewTests(unittest.TestCase):
         page = FakePage()
         service = FakeGeneralPreferencesService()
         service.settings = SupabaseSettings(
+            list_erp_documents=True,
             auto_refresh_erp_documents=True,
             erp_refresh_interval_seconds=30,
         )
@@ -996,6 +998,61 @@ class MainViewTests(unittest.TestCase):
                 "Sblocca impostazioni amministratore",
             ],
         )
+
+    def test_activate_window_restores_focuses_and_updates_window(self) -> None:
+        page = FakePage()
+        page.window.visible = False
+        page.window.minimized = True
+        page.window.focused = False
+        page.window.to_front_count = 0
+        page.window.focus_count = 0
+        page.window.to_front = lambda: setattr(
+            page.window,
+            "to_front_count",
+            page.window.to_front_count + 1,
+        )
+        page.window.focus = lambda: setattr(
+            page.window,
+            "focus_count",
+            page.window.focus_count + 1,
+        )
+        view = MainView(page)
+
+        view.activate_window()
+
+        self.assertTrue(page.window.visible)
+        self.assertFalse(page.window.minimized)
+        self.assertTrue(page.window.focused)
+        self.assertEqual(page.window.to_front_count, 1)
+        self.assertEqual(page.window.focus_count, 1)
+        self.assertTrue(page.updated)
+
+    def test_activate_window_awaits_async_window_methods(self) -> None:
+        page = FakeAsyncLaunchPage()
+        page.window.visible = False
+        page.window.minimized = True
+        page.window.focused = False
+        page.window.to_front_count = 0
+        page.window.focus_count = 0
+
+        async def to_front() -> None:
+            page.window.to_front_count += 1
+
+        async def focus() -> None:
+            page.window.focus_count += 1
+
+        page.window.to_front = to_front
+        page.window.focus = focus
+        view = MainView(page)
+
+        view.activate_window()
+
+        self.assertTrue(page.window.visible)
+        self.assertFalse(page.window.minimized)
+        self.assertTrue(page.window.focused)
+        self.assertEqual(page.window.to_front_count, 1)
+        self.assertEqual(page.window.focus_count, 1)
+        self.assertTrue(page.updated)
 
     def test_signed_history_lists_signed_documents_and_opens_selected_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1597,6 +1654,7 @@ class MainViewTests(unittest.TestCase):
             label="Sincronizza automaticamente i template all'avvio",
         ).value = True
         _find_control(options_tab, label="Salvataggio automatico").value = True
+        _find_control(options_tab, label="Elenco Documenti ERP").value = True
         _find_control(
             options_tab,
             label="Aggiorna automaticamente documenti ERP",
@@ -1607,16 +1665,31 @@ class MainViewTests(unittest.TestCase):
         ).value = "45"
         _find_control(options_tab, label="Mostra testo nel riquadro firma").value = True
         _find_control(signature_tab, label="Metodo firma").value = "wacom"
+        _find_control(signature_tab, label="Porta bridge ERP locale").value = "55123"
         self.assertEqual(
             [
                 control.label
-                for control in options_tab.content.controls
+                for control in signature_tab.content.controls
+                if hasattr(control, "label")
+            ],
+            [
+                "Metodo firma",
+                "Porta bridge ERP locale",
+            ],
+        )
+        self.assertEqual(len(options_tab.content.controls), 2)
+        self.assertEqual(
+            [
+                control.label
+                for column in options_tab.content.controls
+                for control in column.controls
                 if hasattr(control, "label")
             ],
             [
                 "Sincronizza automaticamente i template all'avvio",
                 "Salvataggio automatico",
                 "Mostra testo nel riquadro firma",
+                "Elenco Documenti ERP",
                 "Aggiorna automaticamente documenti ERP",
                 "Intervallo aggiornamento documenti ERP (secondi)",
             ],
@@ -1637,10 +1710,12 @@ class MainViewTests(unittest.TestCase):
                 table_name="SaluteLavoro",
                 auto_sync_templates_on_startup=True,
                 auto_save_signed_documents=True,
+                list_erp_documents=True,
                 auto_refresh_erp_documents=True,
                 erp_refresh_interval_seconds=45,
                 show_signature_text=True,
                 signature_capture_mode="wacom",
+                local_erp_port=55123,
             ),
         )
         self.assertEqual(
@@ -1680,6 +1755,83 @@ class MainViewTests(unittest.TestCase):
         self.assertFalse(service.settings.auto_save_signed_documents)
         self.assertFalse(service.settings.show_signature_text)
         self.assertEqual(service.settings.signature_capture_mode, "wacom")
+
+    def test_general_preferences_disabling_erp_document_list_restores_logo_home(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.settings = SupabaseSettings(list_erp_documents=True)
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="20",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            True,
+            "Caricati 1 documenti",
+            (ErpDocument("NOME_DOCUMENTO.pdf", "2026-07-16 09:29:57"),),
+        )
+        view = MainView(page, general_preferences_service=service)
+        view.refresh_erp_documents()
+        self.assertIsNot(view._home_view.content, view._viewer_placeholder)
+
+        view.show_general_preferences()
+        options_tab = _dialog_tab_contents(page.dialog)[0]
+        list_erp_documents = _find_control(
+            options_tab,
+            label="Elenco Documenti ERP",
+        )
+        list_erp_documents.value = False
+        list_erp_documents.on_change(None)
+        page.dialog.actions[1].on_click(None)
+
+        self.assertFalse(service.settings.list_erp_documents)
+        self.assertIs(view._home_view.content, view._viewer_placeholder)
+        self.assertTrue(view._viewer_placeholder.visible)
+
+    def test_general_preferences_enabling_erp_document_list_loads_documents_without_auto_refresh(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.settings = SupabaseSettings(
+            list_erp_documents=False,
+            auto_refresh_erp_documents=False,
+        )
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="20",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            True,
+            "Caricati 1 documenti",
+            (ErpDocument("NOME_DOCUMENTO.pdf", "2026-07-16 09:29:57"),),
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        view.show_general_preferences()
+        options_tab = _dialog_tab_contents(page.dialog)[0]
+        _find_control(options_tab, label="Elenco Documenti ERP").value = True
+        page.dialog.actions[1].on_click(None)
+
+        self.assertTrue(service.settings.list_erp_documents)
+        self.assertFalse(service.settings.auto_refresh_erp_documents)
+        self.assertEqual(service.erp_document_fetch_count, 1)
+        self.assertIsNot(view._home_view.content, view._viewer_placeholder)
+
+    def test_general_preferences_save_notifies_listener_port_change(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        saved_settings: list[SupabaseSettings] = []
+        view = MainView(
+            page,
+            general_preferences_service=service,
+            on_general_preferences_saved=saved_settings.append,
+        )
+
+        view.show_general_preferences()
+        _, signature_tab = _dialog_tab_contents(page.dialog)
+        _find_control(signature_tab, label="Porta bridge ERP locale").value = "55123"
+        page.dialog.actions[1].on_click(None)
+
+        self.assertEqual(service.settings.local_erp_port, 55123)
+        self.assertEqual(saved_settings[0].local_erp_port, 55123)
 
     def test_general_preferences_checks_and_creates_supabase_table(self) -> None:
         page = FakePage()
@@ -2152,6 +2304,7 @@ class MainViewTests(unittest.TestCase):
             selected_user_id="3",
             selected_user_name="Ghinassi",
         )
+        service.settings = SupabaseSettings(list_erp_documents=True)
         view = MainView(page, general_preferences_service=service)
 
         view.show_startup_user_confirmation()
@@ -2163,6 +2316,23 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(service.erp_document_fetch_count, 1)
         self.assertEqual(service.erp_document_fetch_settings.selected_user_id, "3")
 
+    def test_startup_user_confirmation_keeps_logo_when_erp_document_list_is_disabled(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="3",
+            selected_user_name="Ghinassi",
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        view.show_startup_user_confirmation()
+        page.dialog.actions[1].on_click(None)
+
+        self.assertEqual(service.erp_document_fetch_count, 0)
+        self.assertIs(view._home_view.content, view._viewer_placeholder)
+        self.assertTrue(view._viewer_placeholder.visible)
+
     def test_startup_user_persistent_skips_confirmation_and_loads_documents(self) -> None:
         page = FakePage()
         service = FakeGeneralPreferencesService()
@@ -2172,6 +2342,7 @@ class MainViewTests(unittest.TestCase):
             selected_user_name="Ghinassi",
             persistent_user=True,
         )
+        service.settings = SupabaseSettings(list_erp_documents=True)
         view = MainView(page, general_preferences_service=service)
 
         shown = view.show_startup_user_confirmation()

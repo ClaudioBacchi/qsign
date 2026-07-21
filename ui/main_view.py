@@ -95,6 +95,7 @@ class MainView:
         app_config_path: str | Path = Path("config") / "app.yaml",
         erp_temp_base_directory: str | Path | None = None,
         erp_temp_session_id: str | None = None,
+        on_general_preferences_saved: Callable[[SupabaseSettings], None] | None = None,
     ) -> None:
         import flet as ft
         import flet.canvas as cv
@@ -106,6 +107,7 @@ class MainView:
         self._general_preferences_service = general_preferences_service
         self._template_sync_service = template_sync_service
         self._infinity_dms_client = infinity_dms_client
+        self._on_general_preferences_saved = on_general_preferences_saved
         self._signed_history_directory = Path(signed_history_directory)
         self._learned_template_directory = Path(learned_template_directory)
         self._app_config_path = Path(app_config_path)
@@ -364,7 +366,7 @@ class MainView:
             )
             wait_seconds = (
                 settings.erp_refresh_interval_seconds
-                if settings.auto_refresh_erp_documents
+                if settings.list_erp_documents and settings.auto_refresh_erp_documents
                 else 5
             )
             if self._erp_auto_refresh_stop.wait(wait_seconds):
@@ -375,7 +377,7 @@ class MainView:
         if self._general_preferences_service is None:
             return False
         settings = self._general_preferences_service.get_supabase_settings()
-        if not settings.auto_refresh_erp_documents:
+        if not settings.list_erp_documents or not settings.auto_refresh_erp_documents:
             return False
         if not self._erp_session_user_confirmed:
             return False
@@ -409,6 +411,46 @@ class MainView:
         if window is None or not hasattr(window, "maximized"):
             return
         window.maximized = True
+
+    def activate_window(self) -> None:
+        window = getattr(self._page, "window", None)
+        if window is None:
+            return
+        if hasattr(window, "visible"):
+            window.visible = True
+        if hasattr(window, "minimized"):
+            window.minimized = False
+        if hasattr(window, "focused"):
+            window.focused = True
+        for method_name in ("to_front", "focus"):
+            method = getattr(window, method_name, None)
+            if callable(method):
+                try:
+                    result = method()
+                except Exception:
+                    continue
+                self._await_if_needed(result)
+        update = getattr(self._page, "update", None)
+        if callable(update):
+            update()
+
+    def _await_if_needed(self, value: object) -> None:
+        if not inspect.isawaitable(value):
+            return
+
+        async def await_value() -> None:
+            await value
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            run_task = getattr(self._page, "run_task", None)
+            if callable(run_task):
+                run_task(await_value)
+                return
+            asyncio.run(await_value())
+            return
+        loop.create_task(await_value())
 
     def _build_menu_bar(self) -> object:
         ft = self._ft
@@ -943,7 +985,8 @@ class MainView:
             )
             self._erp_session_user_confirmed = True
             self.show_active_user_status()
-            self.refresh_erp_documents()
+            if self._erp_document_list_enabled():
+                self.refresh_erp_documents()
             return False
         ft = self._ft
 
@@ -954,7 +997,8 @@ class MainView:
             )
             self._erp_session_user_confirmed = True
             self._close_dialog()
-            self.refresh_erp_documents()
+            if self._erp_document_list_enabled():
+                self.refresh_erp_documents()
 
         def replace(_: object) -> None:
             self._close_dialog()
@@ -1015,6 +1059,11 @@ class MainView:
         if user_id:
             return f"{user_name} ({user_id})"
         return user_name
+
+    def _erp_document_list_enabled(self) -> bool:
+        if self._general_preferences_service is None:
+            return False
+        return self._general_preferences_service.get_supabase_settings().list_erp_documents
 
     def _show_local_home_placeholder(self, update: bool = True) -> None:
         self._home_view.content = self._viewer_placeholder
@@ -1755,6 +1804,10 @@ class MainView:
             label="Salvataggio automatico",
             value=settings.auto_save_signed_documents,
         )
+        list_erp_documents = ft.Checkbox(
+            label="Elenco Documenti ERP",
+            value=settings.list_erp_documents,
+        )
         auto_refresh_erp_documents = ft.Checkbox(
             label="Aggiorna automaticamente documenti ERP",
             value=settings.auto_refresh_erp_documents,
@@ -1764,6 +1817,24 @@ class MainView:
             value=str(settings.erp_refresh_interval_seconds),
             width=320,
         )
+
+        def sync_erp_document_options(
+            _: object | None = None,
+            *,
+            update: bool = True,
+        ) -> None:
+            enabled = _checked(list_erp_documents.value)
+            if not enabled:
+                auto_refresh_erp_documents.value = False
+                erp_refresh_interval_seconds.value = "0"
+            auto_refresh_erp_documents.disabled = not enabled
+            erp_refresh_interval_seconds.disabled = not enabled
+            if update:
+                self._update_control(auto_refresh_erp_documents)
+                self._update_control(erp_refresh_interval_seconds)
+
+        list_erp_documents.on_change = sync_erp_document_options
+        sync_erp_document_options(update=False)
         signature_capture_mode = ft.Dropdown(
             label="Metodo firma",
             value=(
@@ -1777,19 +1848,39 @@ class MainView:
             ],
             width=320,
         )
+        local_erp_port = ft.TextField(
+            label="Porta bridge ERP locale",
+            value=str(settings.local_erp_port),
+            width=320,
+            input_filter=ft.NumbersOnlyInputFilter(),
+        )
         show_signature_text = ft.Checkbox(
             label="Mostra testo nel riquadro firma",
             value=settings.show_signature_text,
         )
-        operational_options = ft.Column(
+        operational_options = ft.Row(
             controls=[
-                auto_sync_templates,
-                auto_save_signed_documents,
-                show_signature_text,
-                auto_refresh_erp_documents,
-                erp_refresh_interval_seconds,
+                ft.Column(
+                    controls=[
+                        auto_sync_templates,
+                        auto_save_signed_documents,
+                        show_signature_text,
+                    ],
+                    spacing=10,
+                    expand=True,
+                ),
+                ft.Column(
+                    controls=[
+                        list_erp_documents,
+                        auto_refresh_erp_documents,
+                        erp_refresh_interval_seconds,
+                    ],
+                    spacing=10,
+                    expand=True,
+                ),
             ],
-            spacing=10,
+            spacing=24,
+            vertical_alignment=ft.CrossAxisAlignment.START,
         )
         result_text = ft.Text("")
         result_panel = ft.Container(
@@ -1808,12 +1899,16 @@ class MainView:
                 auto_save_signed_documents=_checked(
                     auto_save_signed_documents.value
                 ),
+                list_erp_documents=_checked(list_erp_documents.value),
                 auto_refresh_erp_documents=_checked(
+                    list_erp_documents.value
+                )
+                and _checked(
                     auto_refresh_erp_documents.value
                 ),
                 erp_refresh_interval_seconds=_integer_or_default(
                     erp_refresh_interval_seconds.value,
-                    60,
+                    60 if _checked(list_erp_documents.value) else 0,
                 ),
                 show_signature_text=_checked(show_signature_text.value),
                 signature_capture_mode=(
@@ -1821,6 +1916,7 @@ class MainView:
                     if signature_capture_mode.value == "wacom"
                     else "mouse"
                 ),
+                local_erp_port=_integer_or_default(local_erp_port.value, 9091),
             )
 
         def set_result(message: str) -> None:
@@ -1828,9 +1924,22 @@ class MainView:
             self._update_control(result_text)
 
         def save(_: object) -> None:
-            self._general_preferences_service.save_supabase_settings(
-                current_settings()
-            )
+            updated_settings = current_settings()
+            self._general_preferences_service.save_supabase_settings(updated_settings)
+            if self._on_general_preferences_saved is not None:
+                self._on_general_preferences_saved(updated_settings)
+            if (
+                not updated_settings.list_erp_documents
+                and self._home_view.visible
+                and not self._document_viewer.visible
+            ):
+                self._show_local_home_placeholder(update=False)
+            if (
+                updated_settings.list_erp_documents
+                and self._home_view.visible
+                and not self._document_viewer.visible
+            ):
+                self.refresh_erp_documents()
             set_result("Impostazioni salvate")
 
         def test(_: object) -> None:
@@ -1896,6 +2005,7 @@ class MainView:
             content=ft.Column(
                 controls=[
                     signature_capture_mode,
+                    local_erp_port,
                 ],
                 spacing=12,
             ),

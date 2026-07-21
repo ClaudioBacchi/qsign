@@ -30,10 +30,12 @@ class SupabaseSettings:
     table_name: str = "SaluteLavoro"
     auto_sync_templates_on_startup: bool = False
     auto_save_signed_documents: bool = False
+    list_erp_documents: bool = False
     auto_refresh_erp_documents: bool = False
-    erp_refresh_interval_seconds: int = 60
+    erp_refresh_interval_seconds: int = 0
     show_signature_text: bool = False
     signature_capture_mode: str = "mouse"
+    local_erp_port: int = 9091
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,10 +103,12 @@ class GeneralPreferencesService:
     _SUPABASE_TABLE_KEY = "supabase_table"
     _SUPABASE_AUTO_SYNC_KEY = "supabase_auto_sync_templates_on_startup"
     _AUTO_SAVE_SIGNED_DOCUMENTS_KEY = "auto_save_signed_documents"
+    _ERP_LIST_DOCUMENTS_KEY = "erp_list_documents"
     _ERP_AUTO_REFRESH_DOCUMENTS_KEY = "erp_auto_refresh_documents"
     _ERP_REFRESH_INTERVAL_SECONDS_KEY = "erp_refresh_interval_seconds"
     _SHOW_SIGNATURE_TEXT_KEY = "show_signature_text"
     _SIGNATURE_CAPTURE_MODE_KEY = "signature_capture_mode"
+    _LOCAL_ERP_PORT_KEY = "local_erp_port"
     _ERP_USERS_URL_KEY = "erp_users_url"
     _ERP_DOCUMENTS_URL_KEY = "erp_documents_url"
     _ERP_DOCUMENT_SERVICE_URL_KEY = "erp_document_service_url"
@@ -132,6 +136,13 @@ class GeneralPreferencesService:
 
     def get_supabase_settings(self) -> SupabaseSettings:
         general = self._read_general_preferences()
+        list_erp_documents = bool(
+            general.get(self._ERP_LIST_DOCUMENTS_KEY)
+            or (
+                self._ERP_LIST_DOCUMENTS_KEY not in general
+                and general.get(self._ERP_AUTO_REFRESH_DOCUMENTS_KEY)
+            )
+        )
         return SupabaseSettings(
             project_url=self._read_encrypted_value(
                 general, self._SUPABASE_URL_KEY
@@ -146,20 +157,40 @@ class GeneralPreferencesService:
             auto_save_signed_documents=bool(
                 general.get(self._AUTO_SAVE_SIGNED_DOCUMENTS_KEY)
             ),
-            auto_refresh_erp_documents=bool(
-                general.get(self._ERP_AUTO_REFRESH_DOCUMENTS_KEY)
+            list_erp_documents=list_erp_documents,
+            auto_refresh_erp_documents=(
+                list_erp_documents
+                and bool(general.get(self._ERP_AUTO_REFRESH_DOCUMENTS_KEY))
             ),
-            erp_refresh_interval_seconds=_normalized_erp_refresh_interval_seconds(
-                general.get(self._ERP_REFRESH_INTERVAL_SECONDS_KEY)
+            erp_refresh_interval_seconds=(
+                _normalized_erp_refresh_interval_seconds(
+                    general.get(self._ERP_REFRESH_INTERVAL_SECONDS_KEY)
+                )
+                if list_erp_documents
+                else 0
             ),
             show_signature_text=bool(general.get(self._SHOW_SIGNATURE_TEXT_KEY)),
             signature_capture_mode=_normalized_signature_capture_mode(
                 general.get(self._SIGNATURE_CAPTURE_MODE_KEY)
             ),
+            local_erp_port=_normalized_local_erp_port(
+                general.get(self._LOCAL_ERP_PORT_KEY)
+            ),
         )
 
     def save_supabase_settings(self, settings: SupabaseSettings) -> None:
         previous_settings = self.get_supabase_settings()
+        list_erp_documents = bool(settings.list_erp_documents)
+        auto_refresh_erp_documents = (
+            list_erp_documents and settings.auto_refresh_erp_documents
+        )
+        erp_refresh_interval_seconds = (
+            _normalized_erp_refresh_interval_seconds(
+                settings.erp_refresh_interval_seconds
+            )
+            if list_erp_documents
+            else 0
+        )
         payload = self._read_preferences()
         general = payload.get(self._PREFERENCES_KEY)
         if not isinstance(general, dict):
@@ -175,21 +206,34 @@ class GeneralPreferencesService:
         general[self._AUTO_SAVE_SIGNED_DOCUMENTS_KEY] = (
             settings.auto_save_signed_documents
         )
-        general[self._ERP_AUTO_REFRESH_DOCUMENTS_KEY] = (
-            settings.auto_refresh_erp_documents
-        )
-        general[self._ERP_REFRESH_INTERVAL_SECONDS_KEY] = (
-            _normalized_erp_refresh_interval_seconds(
-                settings.erp_refresh_interval_seconds
-            )
-        )
+        general[self._ERP_LIST_DOCUMENTS_KEY] = list_erp_documents
+        general[self._ERP_AUTO_REFRESH_DOCUMENTS_KEY] = auto_refresh_erp_documents
+        general[self._ERP_REFRESH_INTERVAL_SECONDS_KEY] = erp_refresh_interval_seconds
         general[self._SHOW_SIGNATURE_TEXT_KEY] = settings.show_signature_text
         general[self._SIGNATURE_CAPTURE_MODE_KEY] = (
             _normalized_signature_capture_mode(settings.signature_capture_mode)
         )
+        general[self._LOCAL_ERP_PORT_KEY] = _normalized_local_erp_port(
+            settings.local_erp_port
+        )
         payload[self._PREFERENCES_KEY] = general
         self._write_preferences(payload)
-        self._log_general_settings_saved(previous_settings, settings)
+        self._log_general_settings_saved(
+            previous_settings,
+            SupabaseSettings(
+                project_url=settings.project_url,
+                password=settings.password,
+                table_name=settings.table_name,
+                auto_sync_templates_on_startup=settings.auto_sync_templates_on_startup,
+                auto_save_signed_documents=settings.auto_save_signed_documents,
+                list_erp_documents=list_erp_documents,
+                auto_refresh_erp_documents=auto_refresh_erp_documents,
+                erp_refresh_interval_seconds=erp_refresh_interval_seconds,
+                show_signature_text=settings.show_signature_text,
+                signature_capture_mode=settings.signature_capture_mode,
+                local_erp_port=settings.local_erp_port,
+            ),
+        )
 
     def get_erp_user_settings(self) -> ErpUserSettings:
         general = self._read_general_preferences()
@@ -619,14 +663,14 @@ class GeneralPreferencesService:
             ),
             auto_sync_templates_on_startup=settings.auto_sync_templates_on_startup,
             auto_save_signed_documents=settings.auto_save_signed_documents,
+            list_erp_documents=settings.list_erp_documents,
             auto_refresh_erp_documents=settings.auto_refresh_erp_documents,
-            erp_refresh_interval_seconds=_normalized_erp_refresh_interval_seconds(
-                settings.erp_refresh_interval_seconds
-            ),
+            erp_refresh_interval_seconds=settings.erp_refresh_interval_seconds,
             show_signature_text=settings.show_signature_text,
             signature_capture_mode=_normalized_signature_capture_mode(
                 settings.signature_capture_mode
             ),
+            local_erp_port=_normalized_local_erp_port(settings.local_erp_port),
             changed_fields=sorted(
                 _changed_general_settings_fields(previous_settings, settings)
             ),
@@ -936,18 +980,16 @@ def _changed_general_settings_fields(
         != settings.auto_save_signed_documents
     ):
         changed_fields.add("auto_save_signed_documents")
+    if previous_settings.list_erp_documents != settings.list_erp_documents:
+        changed_fields.add("list_erp_documents")
     if (
         previous_settings.auto_refresh_erp_documents
         != settings.auto_refresh_erp_documents
     ):
         changed_fields.add("auto_refresh_erp_documents")
     if (
-        _normalized_erp_refresh_interval_seconds(
-            previous_settings.erp_refresh_interval_seconds
-        )
-        != _normalized_erp_refresh_interval_seconds(
-            settings.erp_refresh_interval_seconds
-        )
+        _effective_erp_refresh_interval_seconds(previous_settings)
+        != _effective_erp_refresh_interval_seconds(settings)
     ):
         changed_fields.add("erp_refresh_interval_seconds")
     if previous_settings.show_signature_text != settings.show_signature_text:
@@ -957,6 +999,11 @@ def _changed_general_settings_fields(
         != _normalized_signature_capture_mode(settings.signature_capture_mode)
     ):
         changed_fields.add("signature_capture_mode")
+    if (
+        _normalized_local_erp_port(previous_settings.local_erp_port)
+        != _normalized_local_erp_port(settings.local_erp_port)
+    ):
+        changed_fields.add("local_erp_port")
     return changed_fields
 
 
@@ -973,6 +1020,24 @@ def _normalized_erp_refresh_interval_seconds(value: object) -> int:
     except (TypeError, ValueError):
         return 60
     return max(30, seconds)
+
+
+def _effective_erp_refresh_interval_seconds(settings: SupabaseSettings) -> int:
+    if not settings.list_erp_documents:
+        return 0
+    return _normalized_erp_refresh_interval_seconds(
+        settings.erp_refresh_interval_seconds
+    )
+
+
+def _normalized_local_erp_port(value: object) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return 9091
+    if 1024 <= port <= 65535:
+        return port
+    return 9091
 
 
 def _url_with_query_parameter(url: str, name: str, value: str) -> str:
