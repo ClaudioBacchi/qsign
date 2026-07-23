@@ -13,7 +13,7 @@
     {
       "rule_id": "manual-filename-stem",
       "rule_type": "literal",
-      "expression": "2178db3e7bdf4b6abf317a5bfd9ab7b0_infsceening_000000000052050_GHINASSI_ENNIO_MASSIMO_7_",
+      "expression": "466b8c5c1c194df88b1aeeba88e2396c_infsceening_000000000052050_GHINASSI_ENNIO_MASSIMO_1_",
       "scope": "document",
       "required": false,
       "weight": 0.25
@@ -37,7 +37,7 @@
     {
       "rule_id": "manual-visual-signature",
       "rule_type": "visual_hash",
-      "expression": "000000003f8400403f80fe003801ff4c3ff40040013ffb801ffe00001ffffff81ffffff81ffffc001ffffff81ffffff81ffffff81fe100001ffdfff81ffffff81ffbfff81ffffff80f0000001ffffff81fffc0001ffe00001ff000001ffffff81ffffff81ffffff81fffffc01ffe00000c0007f000000b700000000000000000",
+      "expression": "000000003f8400403f80fc003801ff4c3ff40040013ffb801ffe00001ffffff81ffffff81ffdfc001ffffff81ffffff81ffffff81fe000001ffdfff81ffffff81ffbfff81ffffff80a0000001ffffff81ffec0001ffe00001ff000001ffffff81ffffff81ffffff81fffffc01ffe0000000807f000ffc95000b5c00000000000",
       "scope": "document",
       "required": true,
       "weight": 30.0
@@ -119,6 +119,19 @@
       "y_offset": 757.0,
       "width": 206.0,
       "height": 65.0,
+      "page_index": 0,
+      "required": true
+    },
+    {
+      "placement_id": "manual-signature-2",
+      "role": "signer",
+      "anchor_id": "manual",
+      "side": "manual",
+      "alignment": "manual",
+      "x_offset": 383.5,
+      "y_offset": 741.0,
+      "width": 154.0,
+      "height": 69.0,
       "page_index": 0,
       "required": true
     }

@@ -117,6 +117,10 @@ class LocalErpListenerTests(unittest.TestCase):
                 payload.upload_context.logical_name,
                 "GHINASSI_ENNIO_MASSIMO_20260226.pdf",
             )
+            self.assertEqual(
+                payload.document_name,
+                "GHINASSI_ENNIO_MASSIMO_20260226.pdf",
+            )
 
             listener.stop()
 
@@ -179,6 +183,10 @@ class LocalErpListenerTests(unittest.TestCase):
                 "GHINASSI_ENNIO_MASSIMO_20260226.pdf",
             )
             self.assertEqual(view.activate_count, 1)
+            self.assertEqual(
+                view.flow_events,
+                [("Scaricato", "GHINASSI_ENNIO_MASSIMO_20260226.pdf")],
+            )
             self.assertIn("Local ERP ping received", logger.messages("info"))
             self.assertIn("Local ERP document GET received", logger.messages("info"))
             self.assertNotIn("AUTH-1", str(logger.records))
@@ -237,6 +245,7 @@ class FakeView:
     def __init__(self) -> None:
         self.statuses: list[str] = []
         self.errors: list[str] = []
+        self.flow_events: list[tuple[str, str]] = []
         self.activate_count = 0
 
     def run_ui_task(self, callback) -> None:
@@ -253,6 +262,9 @@ class FakeView:
 
     def show_error(self, message: str) -> None:
         self.errors.append(message)
+
+    def show_document_flow_downloaded(self, document_name: str) -> None:
+        self.flow_events.append(("Scaricato", document_name))
 
 
 class FakePreferencesService:

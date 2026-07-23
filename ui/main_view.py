@@ -40,6 +40,10 @@ from services.signature.svg_signature import (
     fit_svg_signature_strokes,
     parse_svg_signature,
 )
+from services.logging.document_flow_log_service import (
+    DocumentFlowEvent,
+    DocumentFlowLogService,
+)
 from services.templates.supabase_template_sync_service import (
     SupabaseTemplateSyncService,
     SupabaseTemplateSyncServiceError,
@@ -111,7 +115,8 @@ class MainView:
         general_preferences_service: GeneralPreferencesService | None = None,
         template_sync_service: SupabaseTemplateSyncService | None = None,
         infinity_dms_client: InfinityDmsClient | None = None,
-        signed_history_directory: str | Path = Path("dist") / "signed",
+        document_flow_log_service: DocumentFlowLogService | None = None,
+        signed_history_directory: str | Path = Path("documenti_firmati"),
         learned_template_directory: str | Path = "templates",
         app_config_path: str | Path = Path("config") / "app.yaml",
         erp_temp_base_directory: str | Path | None = None,
@@ -128,8 +133,13 @@ class MainView:
         self._general_preferences_service = general_preferences_service
         self._template_sync_service = template_sync_service
         self._infinity_dms_client = infinity_dms_client
+        self._document_flow_log_service = document_flow_log_service
         self._on_general_preferences_saved = on_general_preferences_saved
         self._signed_history_directory = Path(signed_history_directory)
+        self._signed_history_legacy_directory = Path("dist") / "signed"
+        self._include_signed_history_legacy_directory = (
+            self._signed_history_directory == Path("documenti_firmati")
+        )
         self._learned_template_directory = Path(learned_template_directory)
         self._app_config_path = Path(app_config_path)
         self._erp_temp_base_directory = (
@@ -173,6 +183,9 @@ class MainView:
         self._erp_documents_in_flight = False
         self._erp_documents_pending = False
         self._erp_temp_files: set[Path] = set()
+        self._document_flow_events: list[dict[str, str]] = (
+            self._load_document_flow_events_for_today()
+        )
         self._cleanup_orphaned_erp_temp_files()
         self._window_icon_configured = False
         self._signature_strokes: list[list[tuple[float, float]]] = []
@@ -314,6 +327,7 @@ class MainView:
             expand=True,
             bgcolor=ft.Colors.GREY_200,
         )
+        self._show_local_home_placeholder(update=False)
         status_bar = ft.Container(
             content=ft.Row(
                 controls=[
@@ -618,8 +632,8 @@ class MainView:
                     tooltip="Zoom +",
                     on_click=lambda _: self._invoke(self._on_zoom_in),
                 ),
-                ft.Container(expand=True),
                 self._security_button,
+                ft.Container(expand=True),
             ],
             spacing=2,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -791,11 +805,12 @@ class MainView:
                         controls=[
                             ft.Text(
                                 "Documenti ERP da firmare",
+                                color=ft.Colors.GREY_900,
                                 weight=ft.FontWeight.BOLD,
                                 size=18,
                             ),
                             ft.Container(expand=True),
-                            ft.OutlinedButton(
+                            self._erp_home_button(
                                 "Aggiorna",
                                 disabled=True,
                                 on_click=lambda _: self.refresh_erp_documents(),
@@ -804,7 +819,10 @@ class MainView:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     ft.Container(
-                        content=ft.Text("Caricamento documenti..."),
+                        content=ft.Text(
+                            "Caricamento documenti...",
+                            color=ft.Colors.GREY_900,
+                        ),
                         expand=True,
                         clip_behavior=ft.ClipBehavior.HARD_EDGE,
                     ),
@@ -1095,10 +1113,203 @@ class MainView:
         return self._general_preferences_service.get_supabase_settings().list_erp_documents
 
     def _show_local_home_placeholder(self, update: bool = True) -> None:
-        self._home_view.content = self._viewer_placeholder
-        self._viewer_placeholder.visible = True
+        if self._document_flow_events:
+            self._home_view.content = self._build_document_flow_home()
+            self._viewer_placeholder.visible = False
+        else:
+            self._home_view.content = self._viewer_placeholder
+            self._viewer_placeholder.visible = True
         if update and self._home_view.visible:
             self._page.update()
+
+    def show_document_flow_downloaded(self, document_name: str) -> None:
+        self._add_document_flow_event(document_name, "Scaricato")
+
+    def show_document_flow_signed(self, document_name: str) -> None:
+        self._add_document_flow_event(document_name, "Firmato")
+
+    def show_document_flow_uploaded(self, document_name: str) -> None:
+        self._add_document_flow_event(document_name, "Caricato")
+
+    def show_document_flow_upload_failed(self, document_name: str) -> None:
+        self._add_document_flow_event(document_name, "Errore invio")
+
+    def _add_document_flow_event(self, document_name: str, status: str) -> None:
+        name = Path(str(document_name or "")).name.strip() or "Documento"
+        timestamp = datetime.now()
+        self._append_document_flow_log(name, status, timestamp)
+        self._document_flow_events.insert(
+            0,
+            {
+                "document": name,
+                "status": status,
+                "timestamp": self._format_document_flow_timestamp(timestamp),
+            },
+        )
+        del self._document_flow_events[80:]
+        if self._home_view.visible and not self._document_viewer.visible:
+            self._show_local_home_placeholder(update=False)
+            self._page.update()
+
+    def _load_document_flow_events_for_today(self) -> list[dict[str, str]]:
+        if self._document_flow_log_service is None:
+            return []
+        events = self._document_flow_log_service.events_for_day()
+        return [
+            self._document_flow_event_to_row(event)
+            for event in reversed(events[-80:])
+        ]
+
+    def _append_document_flow_log(
+        self,
+        document_name: str,
+        status: str,
+        timestamp: datetime,
+    ) -> None:
+        if self._document_flow_log_service is None:
+            return
+        try:
+            self._document_flow_log_service.append_event(
+                document=document_name,
+                status=status,
+                timestamp=timestamp,
+            )
+        except OSError:
+            return
+
+    def _document_flow_event_to_row(
+        self,
+        event: DocumentFlowEvent,
+    ) -> dict[str, str]:
+        return {
+            "document": event.document,
+            "status": event.status,
+            "timestamp": self._format_document_flow_timestamp(event.timestamp),
+        }
+
+    @staticmethod
+    def _format_document_flow_timestamp(timestamp: datetime) -> str:
+        return timestamp.strftime("%d/%m/%Y %H:%M:%S")
+
+    def _build_document_flow_home(self) -> object:
+        ft = self._ft
+        rows = [
+            ft.DataRow(
+                color=self._document_flow_row_color(event["status"]),
+                cells=[
+                    ft.DataCell(
+                        ft.Container(
+                            content=self._erp_home_text(event["document"]),
+                            padding=8,
+                        )
+                    ),
+                    ft.DataCell(
+                        ft.Container(
+                            content=self._erp_home_text(
+                                event["status"],
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            padding=8,
+                        )
+                    ),
+                    ft.DataCell(
+                        ft.Container(
+                            content=self._erp_home_text(event["timestamp"]),
+                            padding=8,
+                        )
+                    ),
+                ],
+            )
+            for event in self._document_flow_events
+        ]
+        return ft.Container(
+            padding=24,
+            expand=True,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            self._erp_home_text(
+                                "Flussi documenti",
+                                weight=ft.FontWeight.BOLD,
+                                size=18,
+                            ),
+                            ft.Container(expand=True),
+                            ft.Image(
+                                src=self._image_data_uri(
+                                    "images/logo_qsign_grande.png"
+                                ),
+                                width=170,
+                                fit=ft.BoxFit.CONTAIN,
+                                semantics_label="QSign",
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                    ),
+                    ft.Container(
+                        content=ft.ListView(
+                            controls=[
+                                ft.DataTable(
+                                    columns=[
+                                        ft.DataColumn(
+                                            self._erp_home_text(
+                                                "Documento",
+                                                weight=ft.FontWeight.BOLD,
+                                            )
+                                        ),
+                                        ft.DataColumn(
+                                            self._erp_home_text(
+                                                "Stato",
+                                                weight=ft.FontWeight.BOLD,
+                                            )
+                                        ),
+                                        ft.DataColumn(
+                                            self._erp_home_text(
+                                                "Data e ora",
+                                                weight=ft.FontWeight.BOLD,
+                                            )
+                                        ),
+                                    ],
+                                    rows=rows,
+                                    column_spacing=24,
+                                )
+                            ],
+                            expand=True,
+                            spacing=0,
+                            padding=0,
+                        ),
+                        expand=True,
+                        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                    ),
+                ],
+                spacing=12,
+                expand=True,
+            ),
+        )
+
+    def _document_flow_row_color(self, status: str) -> str:
+        colors = {
+            "Scaricato": self._ft.Colors.with_opacity(0.18, self._ft.Colors.BLUE),
+            "Firmato": self._ft.Colors.with_opacity(0.18, self._ft.Colors.AMBER),
+            "Caricato": self._ft.Colors.with_opacity(0.18, self._ft.Colors.GREEN),
+            "Errore invio": self._ft.Colors.with_opacity(0.18, self._ft.Colors.RED),
+        }
+        return colors.get(status, self._ft.Colors.WHITE)
+
+    def _erp_home_text(self, value: str, **kwargs: object) -> object:
+        kwargs.setdefault("color", self._ft.Colors.GREY_900)
+        return self._ft.Text(value, **kwargs)
+
+    def _erp_home_button(self, value: str, **kwargs: object) -> object:
+        color = (
+            self._ft.Colors.GREY_500
+            if kwargs.get("disabled")
+            else self._ft.Colors.BLUE_800
+        )
+        return self._ft.OutlinedButton(
+            content=self._ft.Text(value, color=color),
+            **kwargs,
+        )
 
     def _show_erp_documents_home(
         self,
@@ -1115,12 +1326,12 @@ class MainView:
         rows = [
             ft.DataRow(
                 cells=[
-                    ft.DataCell(ft.Text(document.name)),
-                    ft.DataCell(ft.Text(document.checkout_date)),
+                    ft.DataCell(self._erp_home_text(document.name)),
+                    ft.DataCell(self._erp_home_text(document.checkout_date)),
                     *(
                         [
                             ft.DataCell(
-                                ft.OutlinedButton(
+                                self._erp_home_button(
                                     "Apri",
                                     disabled=not self._erp_document_has_download_keys(
                                         document
@@ -1145,10 +1356,24 @@ class MainView:
                 controls=[
                     ft.DataTable(
                         columns=[
-                            ft.DataColumn(ft.Text("Nome documento")),
-                            ft.DataColumn(ft.Text("Data")),
+                            ft.DataColumn(
+                                self._erp_home_text(
+                                    "Nome documento",
+                                    weight=ft.FontWeight.BOLD,
+                                )
+                            ),
+                            ft.DataColumn(
+                                self._erp_home_text("Data", weight=ft.FontWeight.BOLD)
+                            ),
                             *(
-                                [ft.DataColumn(ft.Text("Azione"))]
+                                [
+                                    ft.DataColumn(
+                                        self._erp_home_text(
+                                            "Azione",
+                                            weight=ft.FontWeight.BOLD,
+                                        )
+                                    )
+                                ]
                                 if can_open_documents
                                 else []
                             ),
@@ -1162,7 +1387,7 @@ class MainView:
                 padding=0,
             )
         else:
-            content = ft.Text("Nessun documento da firmare")
+            content = self._erp_home_text("Nessun documento da firmare")
         self._home_view.content = ft.Container(
             padding=24,
             expand=True,
@@ -1170,13 +1395,13 @@ class MainView:
                 controls=[
                     ft.Row(
                         controls=[
-                            ft.Text(
+                            self._erp_home_text(
                                 "Documenti ERP da firmare",
                                 weight=ft.FontWeight.BOLD,
                                 size=18,
                             ),
                             ft.Container(expand=True),
-                            ft.OutlinedButton(
+                            self._erp_home_button(
                                 "Aggiorna",
                                 on_click=lambda _: self.refresh_erp_documents(),
                             ),
@@ -1340,6 +1565,13 @@ class MainView:
                 self._set_erp_download_status(status_text, error_message)
                 return
             self._set_erp_download_status(status_text, "")
+            flow_document_name = (
+                erp_upload_context.logical_name
+                if erp_upload_context is not None
+                and erp_upload_context.logical_name.strip()
+                else path.name
+            )
+            self.show_document_flow_downloaded(flow_document_name)
             if self._on_open_document is not None:
                 self._call_open_document(str(path), erp_upload_context)
         finally:
@@ -1463,11 +1695,15 @@ class MainView:
                 controls=[
                     ft.Text(
                         "Documenti ERP da firmare",
+                        color=ft.Colors.GREY_900,
                         weight=ft.FontWeight.BOLD,
                         size=18,
                     ),
-                    ft.Text(message or "Errore caricamento documenti ERP"),
-                    ft.OutlinedButton(
+                    ft.Text(
+                        message or "Errore caricamento documenti ERP",
+                        color=ft.Colors.GREY_900,
+                    ),
+                    self._erp_home_button(
                         "Riprova",
                         on_click=lambda _: self.refresh_erp_documents(),
                     ),
@@ -1557,6 +1793,32 @@ class MainView:
             actions=[
                 ft.TextButton("Torna al documento", on_click=cancel),
                 ft.FilledButton("Continua senza salvare", on_click=confirm),
+            ],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
+    def ask_close_application(
+        self,
+        on_confirm: Callable[[], None],
+        on_cancel: Callable[[], None],
+    ) -> None:
+        ft = self._ft
+
+        def confirm(_: object) -> None:
+            self._close_dialog()
+            on_confirm()
+
+        def cancel(_: object) -> None:
+            self._close_dialog()
+            on_cancel()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Chiudi qSign"),
+            content=ft.Text("Vuoi chiudere qSign?"),
+            actions=[
+                ft.TextButton("Annulla", on_click=cancel),
+                ft.FilledButton("Chiudi", on_click=confirm),
             ],
         )
         self._active_dialog = dialog
@@ -2558,6 +2820,15 @@ class MainView:
         def refresh_with_result(message: str) -> None:
             self.show_template_history(message)
 
+        def sync_message(base: str, result: object) -> str:
+            conflicts = getattr(result, "conflicts", ()) or ()
+            if not conflicts:
+                return base
+            names = ", ".join(
+                str(getattr(conflict, "template_id", "")) for conflict in conflicts
+            )
+            return f"{base}; conflitti: {names}"
+
         def sync_action(action: str) -> None:
             if self._template_sync_service is None:
                 set_result("Sincronizzazione template non disponibile")
@@ -2566,16 +2837,22 @@ class MainView:
                 if action == "download":
                     result = self._template_sync_service.download_templates()
                     refresh_with_result(
-                        f"Scaricati {result.downloaded}, invariati {result.skipped}"
+                        sync_message(
+                            f"Scaricati {result.downloaded}, invariati {result.skipped}",
+                            result,
+                        )
                     )
                 elif action == "upload":
                     result = self._template_sync_service.upload_templates()
-                    set_result(f"Caricati {result.uploaded}")
+                    set_result(sync_message(f"Caricati {result.uploaded}", result))
                 else:
                     result = self._template_sync_service.sync_templates()
                     refresh_with_result(
-                        f"Caricati {result.uploaded}, "
-                        f"scaricati {result.downloaded}, invariati {result.skipped}"
+                        sync_message(
+                            f"Caricati {result.uploaded}, "
+                            f"scaricati {result.downloaded}, invariati {result.skipped}",
+                            result,
+                        )
                     )
             except SupabaseTemplateSyncServiceError as error:
                 set_result(str(error))
@@ -3216,29 +3493,53 @@ class MainView:
             await result
 
     def _app_version(self) -> str:
-        config_path = self._app_config_path
-        if not config_path.is_file() and not config_path.is_absolute():
-            config_path = self._application_root() / config_path
-        if not config_path.is_file():
-            return "00.000.000"
+        config_path = self._resolve_app_config_path()
+        if config_path is None:
+            return "00.000"
         try:
             for line in config_path.read_text(encoding="utf-8").splitlines():
                 key, separator, value = line.partition(":")
-                if separator and key.strip() == "version":
-                    return value.strip().strip("'\"") or "00.000.000"
+                if separator and key.strip().lstrip("\ufeff") == "version":
+                    return value.strip().strip("'\"") or "00.000"
         except OSError:
-            return "00.000.000"
-        return "00.000.000"
+            return "00.000"
+        return "00.000"
+
+    def _resolve_app_config_path(self) -> Path | None:
+        config_path = self._app_config_path
+        candidates = []
+        if config_path.is_absolute():
+            candidates.append(config_path)
+        else:
+            bundle_root = getattr(sys, "_MEIPASS", "")
+            if bundle_root:
+                candidates.append(Path(str(bundle_root)) / config_path)
+            candidates.append(self._application_root() / config_path)
+            candidates.append(config_path)
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return None
 
     def _signed_history_documents(self) -> list[Path]:
-        if not self._signed_history_directory.is_dir():
-            return []
+        directories = [self._signed_history_directory]
+        if self._include_signed_history_legacy_directory:
+            directories.append(self._signed_history_legacy_directory)
+        documents: list[Path] = []
+        seen: set[Path] = set()
+        for directory in directories:
+            if not directory.is_dir():
+                continue
+            for path in directory.iterdir():
+                if not path.is_file() or path.suffix.lower() != ".pdf":
+                    continue
+                key = path.resolve()
+                if key in seen:
+                    continue
+                seen.add(key)
+                documents.append(path)
         return sorted(
-            (
-                path
-                for path in self._signed_history_directory.iterdir()
-                if path.is_file() and path.suffix.lower() == ".pdf"
-            ),
+            documents,
             key=lambda path: path.stat().st_ctime,
             reverse=True,
         )

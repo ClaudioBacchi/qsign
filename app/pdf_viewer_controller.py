@@ -24,6 +24,10 @@ from services.pdf.pdf_provider import PdfProvider
 from services.pdf.pdf_signature import SignatureArea
 from services.signature.signature_service import CapturedSignature
 from services.templates.template_repository import TemplateRepository
+from services.templates.supabase_template_sync_service import (
+    SupabaseTemplateSyncService,
+    SupabaseTemplateSyncServiceError,
+)
 from services.wacom.wacom_service import WacomProvider
 
 
@@ -111,6 +115,14 @@ class PDFViewerView(Protocol):
 
     def show_status(self, message: str) -> None: ...
 
+    def show_document_flow_downloaded(self, document_name: str) -> None: ...
+
+    def show_document_flow_signed(self, document_name: str) -> None: ...
+
+    def show_document_flow_uploaded(self, document_name: str) -> None: ...
+
+    def show_document_flow_upload_failed(self, document_name: str) -> None: ...
+
     def defer_signature_capture(self, callback: Callable[[], None]) -> None: ...
 
     def defer_viewer_refresh(self, callback: Callable[[], None]) -> None: ...
@@ -181,6 +193,7 @@ class PDFViewerController:
     _ZOOM_STEP = 0.25
     _MINIMUM_ZOOM = 0.25
     _MAXIMUM_ZOOM = 4.0
+    _ERP_UPLOAD_ATTEMPTS = 3
     _DEMO_SIGNATURE_WIDTH = 110.0
     _DEMO_SIGNATURE_HEIGHT = 40.0
     _DEMO_SIGNATURE_TOP_GAP = 8.0
@@ -199,6 +212,7 @@ class PDFViewerController:
         template_repository: TemplateRepository | None = None,
         general_preferences_service: GeneralPreferencesService | None = None,
         infinity_dms_client: InfinityDmsClient | None = None,
+        template_sync_service: SupabaseTemplateSyncService | None = None,
         signature_provider: WacomProvider | None = None,
         template_root: str | Path = "templates",
     ) -> None:
@@ -210,6 +224,7 @@ class PDFViewerController:
         self._template_repository = template_repository
         self._general_preferences_service = general_preferences_service
         self._infinity_dms_client = infinity_dms_client
+        self._template_sync_service = template_sync_service
         self._signature_provider = signature_provider
         self._template_root = Path(template_root)
         self._canonical_document: Document | None = None
@@ -224,6 +239,7 @@ class PDFViewerController:
         self._recognized_template: Template | None = None
         self._pending_manual_rectangle_restore: SignatureRectangleSnapshot | None = None
         self._erp_upload_context: ErpSignedDocumentUploadContext | None = None
+        self._document_flow_name: str = ""
         self._workflow_status = "Apri un PDF"
         self._has_unsaved_signature = False
         self._wacom_capture_cancel: threading.Event | None = None
@@ -250,6 +266,10 @@ class PDFViewerController:
             self._has_unsaved_signature = False
             self._erp_upload_context = erp_upload_context
             document = self._pdf_service.open_document(Path(path))
+            self._document_flow_name = self._document_flow_name_for_document(
+                document,
+                erp_upload_context,
+            )
             self.state = PDFViewerState(page_count=document.page_count)
             self._analyze_document(Path(path))
             self._focus_signature_page_if_available()
@@ -270,6 +290,7 @@ class PDFViewerController:
             self._recognized_template = None
             self._pending_manual_rectangle_restore = None
             self._erp_upload_context = None
+            self._document_flow_name = ""
             self._has_unsaved_signature = False
             self._workflow_status = "Documento non aperto"
             self._view.clear_document()
@@ -299,6 +320,7 @@ class PDFViewerController:
             self._recognized_template = None
             self._pending_manual_rectangle_restore = None
             self._erp_upload_context = None
+            self._document_flow_name = ""
             self._has_unsaved_signature = False
             self._workflow_status = "Apri un PDF"
             self._view.set_manual_signature_mode(False)
@@ -322,6 +344,7 @@ class PDFViewerController:
         self._recognized_template = None
         self._pending_manual_rectangle_restore = None
         self._erp_upload_context = None
+        self._document_flow_name = ""
         self._has_unsaved_signature = False
         self._workflow_status = "Apri un PDF"
 
@@ -870,9 +893,14 @@ class PDFViewerController:
             self._view.defer_viewer_refresh(self._render_current_page)
 
     def save_signed_pdf(self) -> None:
-        if self._pdf_service.current_document is None:
+        document = self._pdf_service.current_document
+        if document is None:
             self._view.show_error("Nessun PDF aperto")
             return
+        flow_document_name = (
+            self._document_flow_name
+            or self._document_flow_name_for_document(document, self._erp_upload_context)
+        )
         if not self._signature_targets:
             self._view.show_error("Nessun rettangolo firma disponibile")
             return
@@ -907,6 +935,8 @@ class PDFViewerController:
                 destination = self._pdf_service.save_signed_previews(signatures)
         except Exception as error:
             self._logger.exception("Unable to save signed PDF preview")
+            self._has_unsaved_signature = True
+            self._render_current_page()
             self._view.show_error(str(error))
             return
 
@@ -929,15 +959,22 @@ class PDFViewerController:
         self._recognized_template = None
         self._pending_manual_rectangle_restore = None
         self._erp_upload_context = None
+        self._document_flow_name = ""
         self._view.set_manual_signature_mode(False)
         self._view.clear_document()
+        self._view.show_document_flow_signed(flow_document_name)
         self._view.show_status(f"PDF firmato salvato: {destination}")
-        self._queue_signed_pdf_erp_upload(Path(destination), erp_upload_context)
+        self._queue_signed_pdf_erp_upload(
+            Path(destination),
+            erp_upload_context,
+            flow_document_name,
+        )
 
     def _queue_signed_pdf_erp_upload(
         self,
         destination: Path,
         context: ErpSignedDocumentUploadContext | None,
+        flow_document_name: str = "",
     ) -> None:
         if context is None:
             return
@@ -956,17 +993,210 @@ class PDFViewerController:
                 logical_name_configured=bool(context.logical_name.strip()),
             )
             return
+        self._write_pending_erp_upload(destination, context, flow_document_name)
 
         def upload() -> None:
-            self._upload_signed_pdf_to_erp(destination, context)
+            self._upload_signed_pdf_to_erp(destination, context, flow_document_name)
 
         self._view.run_background_task(upload)
+
+    def retry_pending_erp_uploads(
+        self,
+        directory: str | Path = Path("documenti_firmati"),
+    ) -> None:
+        upload_directory = Path(directory)
+        if self._general_preferences_service is None or self._infinity_dms_client is None:
+            return
+        if not upload_directory.is_dir():
+            return
+        for sidecar in sorted(upload_directory.glob("*.pdf.erp-upload.json")):
+            pending = self._read_pending_erp_upload(sidecar)
+            if pending is None:
+                continue
+            destination, context, flow_document_name = pending
+            if not destination.is_file():
+                self._logger.warning(
+                    "Pending ERP signed document upload skipped",
+                    reason="signed_file_missing",
+                    sidecar=str(sidecar),
+                    destination=str(destination),
+                )
+                continue
+
+            def upload(
+                path: Path = destination,
+                upload_context: ErpSignedDocumentUploadContext = context,
+                document_name: str = flow_document_name,
+            ) -> None:
+                self._upload_signed_pdf_to_erp(path, upload_context, document_name)
+
+            self._view.run_background_task(upload)
+
+    def _write_pending_erp_upload(
+        self,
+        destination: Path,
+        context: ErpSignedDocumentUploadContext,
+        flow_document_name: str = "",
+    ) -> None:
+        sidecar = self._erp_upload_sidecar(destination)
+        payload = {
+            "signed_path": str(destination),
+            "document_id": context.document_id,
+            "logical_dir": context.logical_dir,
+            "logical_name": context.logical_name,
+            "flow_document_name": flow_document_name,
+        }
+        try:
+            sidecar.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as error:
+            self._logger.warning(
+                "Pending ERP signed document upload not persisted",
+                destination=str(destination),
+                error=str(error),
+            )
+
+    def _read_pending_erp_upload(
+        self,
+        sidecar: Path,
+    ) -> tuple[Path, ErpSignedDocumentUploadContext, str] | None:
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            self._logger.warning(
+                "Pending ERP signed document upload invalid",
+                sidecar=str(sidecar),
+                error=str(error),
+            )
+            return None
+        if not isinstance(payload, dict):
+            return None
+        signed_path = Path(str(payload.get("signed_path") or ""))
+        if not signed_path.is_absolute():
+            signed_path = sidecar.parent / signed_path.name
+        document_id = str(payload.get("document_id") or "").strip()
+        logical_dir = str(payload.get("logical_dir") or "").strip()
+        logical_name = str(payload.get("logical_name") or "").strip()
+        if not document_id or not logical_dir or not logical_name:
+            self._logger.warning(
+                "Pending ERP signed document upload incomplete",
+                sidecar=str(sidecar),
+                document_id_configured=bool(document_id),
+                logical_dir_configured=bool(logical_dir),
+                logical_name_configured=bool(logical_name),
+            )
+            return None
+        flow_document_name = str(
+            payload.get("flow_document_name") or logical_name
+        ).strip()
+        return (
+            signed_path,
+            ErpSignedDocumentUploadContext(
+                document_id=document_id,
+                logical_dir=logical_dir,
+                logical_name=logical_name,
+            ),
+            flow_document_name,
+        )
+
+    @staticmethod
+    def _erp_upload_sidecar(destination: Path) -> Path:
+        return destination.with_suffix(destination.suffix + ".erp-upload.json")
 
     def _upload_signed_pdf_to_erp(
         self,
         destination: Path,
         context: ErpSignedDocumentUploadContext,
+        flow_document_name: str = "",
     ) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, self._ERP_UPLOAD_ATTEMPTS + 1):
+            try:
+                self._upload_signed_pdf_to_erp_once(destination, context, attempt)
+            except Exception as error:
+                last_error = error
+                self._logger.exception(
+                    "ERP signed document upload attempt failed",
+                    document_id=context.document_id,
+                    attempt=attempt,
+                    attempts=self._ERP_UPLOAD_ATTEMPTS,
+                )
+                continue
+            self._delete_pending_erp_upload(destination)
+            self._view.run_ui_task(
+                lambda: self._show_erp_upload_success(
+                    destination,
+                    context,
+                    flow_document_name,
+                )
+            )
+            return
+
+        self._logger.error(
+            "ERP signed document upload failed after retries",
+            document_id=context.document_id,
+            attempts=self._ERP_UPLOAD_ATTEMPTS,
+            destination=str(destination),
+        )
+        self._view.run_ui_task(
+            lambda: self._show_erp_upload_failure(
+                destination,
+                context,
+                last_error,
+                flow_document_name,
+            )
+        )
+
+    def _show_erp_upload_success(
+        self,
+        destination: Path,
+        context: ErpSignedDocumentUploadContext,
+        flow_document_name: str = "",
+    ) -> None:
+        self._view.show_document_flow_uploaded(
+            flow_document_name or context.logical_name or destination.name
+        )
+        self._view.show_status("PDF firmato inviato all'ERP")
+
+    def _show_erp_upload_failure(
+        self,
+        destination: Path,
+        context: ErpSignedDocumentUploadContext,
+        error: Exception | None,
+        flow_document_name: str = "",
+    ) -> None:
+        self._view.show_document_flow_upload_failed(
+            flow_document_name or context.logical_name or destination.name
+        )
+        self._view.show_error(
+            "invio documento firmato all'ERP fallito dopo "
+            f"{self._ERP_UPLOAD_ATTEMPTS} tentativi: {error}"
+        )
+
+    def _delete_pending_erp_upload(self, destination: Path) -> None:
+        sidecar = self._erp_upload_sidecar(destination)
+        try:
+            sidecar.unlink(missing_ok=True)
+        except OSError as error:
+            self._logger.warning(
+                "Pending ERP signed document upload not removed",
+                sidecar=str(sidecar),
+                error=str(error),
+            )
+
+    def _upload_signed_pdf_to_erp_once(
+        self,
+        destination: Path,
+        context: ErpSignedDocumentUploadContext,
+        attempt: int,
+    ) -> None:
+        if not destination.is_file():
+            raise RuntimeError(f"PDF firmato non trovato: {destination}")
+        content = destination.read_bytes()
+        if not content:
+            raise RuntimeError(f"PDF firmato vuoto: {destination}")
         try:
             settings = self._general_preferences_service.get_erp_user_settings()
             service_url = settings.document_service_url.strip()
@@ -980,6 +1210,8 @@ class PDFViewerController:
             self._logger.info(
                 "ERP signed document upload started",
                 document_id=context.document_id,
+                attempt=attempt,
+                attempts=self._ERP_UPLOAD_ATTEMPTS,
                 logical_dir_configured=bool(context.logical_dir.strip()),
                 logical_name_configured=bool(context.logical_name.strip()),
             )
@@ -990,29 +1222,33 @@ class PDFViewerController:
                     password=password,
                     company_id=company,
                 ),
-                content=destination.read_bytes(),
+                content=content,
                 logical_dir=context.logical_dir,
                 logical_name=context.logical_name,
             )
-        except Exception as error:
-            self._logger.exception(
-                "ERP signed document upload failed",
-                document_id=context.document_id,
-            )
-            self._view.run_ui_task(
-                lambda: self._view.show_error(
-                    f"invio documento firmato all'ERP fallito: {error}"
+            result_code = str(result).strip()
+            if result_code != "0":
+                raise RuntimeError(
+                    f"ERP non ha confermato l'invio: copyFileReturn={result_code or '<vuoto>'}"
                 )
-            )
-            return
+        except Exception:
+            raise
         self._logger.info(
             "ERP signed document uploaded",
             document_id=context.document_id,
-            result_present=bool(str(result).strip()),
+            attempt=attempt,
+            attempts=self._ERP_UPLOAD_ATTEMPTS,
+            copy_file_return=result_code,
         )
-        self._view.run_ui_task(
-            lambda: self._view.show_status("PDF firmato inviato all'ERP")
-        )
+
+    @staticmethod
+    def _document_flow_name_for_document(
+        document: Document,
+        erp_upload_context: ErpSignedDocumentUploadContext | None,
+    ) -> str:
+        if erp_upload_context is not None and erp_upload_context.logical_name.strip():
+            return erp_upload_context.logical_name.strip()
+        return document.filename or document.path.name
 
     def _auto_save_signed_documents_enabled(self) -> bool:
         if self._general_preferences_service is None:
@@ -1037,9 +1273,7 @@ class PDFViewerController:
             return
 
         self._template_root.mkdir(exist_ok=True)
-        template_path = self._template_root / self._manual_template_filename(
-            self._canonical_document
-        )
+        template_path = self._manual_template_path(self._canonical_document)
         recognition_rules = self._manual_recognition_rules(self._canonical_document)
         anchor_rule, placement_rules = self._manual_template_placement_rules(
             self._canonical_document
@@ -1071,12 +1305,62 @@ class PDFViewerController:
         self._workflow_status = f"Modello salvato: {template_path.name}"
         self._pending_manual_rectangle_restore = None
         self._logger.info("Manual template saved", path=str(template_path))
+        self._queue_template_upload(template_path)
         self._render_current_page()
         if len(self._signature_targets) == 1:
             self._open_wacom_signature_when_ready()
         else:
             self._workflow_status = "Seleziona la zona firma da compilare"
             self._render_current_page()
+
+    def _queue_template_upload(self, template_path: Path) -> None:
+        if self._template_sync_service is None:
+            return
+
+        def upload() -> None:
+            try:
+                result = self._template_sync_service.upload_template(template_path)
+            except SupabaseTemplateSyncServiceError as error:
+                self._logger.warning(
+                    "Manual template upload failed",
+                    template=str(template_path),
+                    error=str(error),
+                )
+                self._view.run_ui_task(
+                    lambda: self._view.show_error(
+                        f"Template salvato localmente, upload Supabase fallito: {error}"
+                    )
+                )
+                return
+            if result.conflicts:
+                conflict_names = ", ".join(
+                    conflict.template_id for conflict in result.conflicts
+                )
+                self._logger.warning(
+                    "Manual template upload conflict",
+                    template=str(template_path),
+                    conflicts=conflict_names,
+                )
+                self._view.run_ui_task(
+                    lambda: self._view.show_error(
+                        "Conflitto template Supabase: "
+                        f"{conflict_names}. Upload automatico saltato."
+                    )
+                )
+                return
+            if result.uploaded:
+                self._logger.info(
+                    "Manual template uploaded",
+                    template=str(template_path),
+                    uploaded=result.uploaded,
+                )
+                self._view.run_ui_task(
+                    lambda: self._view.show_status(
+                        f"Template sincronizzato su Supabase: {template_path.name}"
+                    )
+                )
+
+        self._view.run_background_task(upload)
 
     def cancel_manual_template_change(self) -> None:
         snapshot = self._pending_manual_rectangle_restore
@@ -1513,6 +1797,19 @@ class PDFViewerController:
 
     def _manual_template_filename(self, document: Document) -> str:
         return f"learned_{_manual_template_key(document)}.json"
+
+    def _manual_template_path(self, document: Document) -> Path:
+        recognized_template = self._recognized_template
+        if (
+            recognized_template is not None
+            and recognized_template.document_type == "manual_signature_flow"
+            and recognized_template.template_id.startswith("learned_")
+        ):
+            name = Path(recognized_template.template_id).name
+            if not name.endswith(".json"):
+                name = f"{name}.json"
+            return self._template_root / name
+        return self._template_root / self._manual_template_filename(document)
 
     def _manual_template_placement_rules(
         self, document: Document

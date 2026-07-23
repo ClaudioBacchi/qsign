@@ -57,8 +57,8 @@ esplicitamente l'ambiente virtuale.
 
 ## Rilascio Windows
 
-Lo script crea il bundle PyInstaller, il pacchetto portable e l'installer Inno
-Setup versionato leggendo la versione da `config/app.yaml`:
+Lo script incrementa la versione in `config/app.yaml`, poi crea il bundle
+PyInstaller, il pacchetto portable e l'installer Inno Setup:
 
 ```powershell
 .\build_release.ps1
@@ -75,11 +75,16 @@ release/QSign-<version>/installer/QSignSetup-<version>.exe
 Opzioni utili:
 
 ```powershell
-.\build_release.ps1 -Release "01.001.001"
+.\build_release.ps1 -Release "01.001"
+.\build_release.ps1 -MajorRelease
 .\build_release.ps1 -SkipTests
 .\build_release.ps1 -SkipInstaller
 .\build_release.ps1 -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
+
+La versione usa il formato `00.000`: una build normale incrementa l'ultima
+terzetta (`01.001` -> `01.002`), mentre `-MajorRelease` passa alla major
+successiva (`01.001` -> `02.000`). `-Release` consente un override manuale.
 
 L'installer non include `config/preferences.json`: le preferenze e le credenziali
 restano locali alla macchina dell'utente.

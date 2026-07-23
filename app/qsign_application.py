@@ -9,6 +9,7 @@ from app.services.general_preferences_service import GeneralPreferencesService
 from app.services.infinity_dms_client import InfinityDmsClient
 from app.services.local_erp_listener import LocalErpListener
 from services.anchors.anchor_detector import AnchorDetector
+from services.logging.document_flow_log_service import DocumentFlowLogService
 from services.logging.logging_service import LoggingService
 from services.pdf.pdf_service import PDFService
 from services.pdf.providers.pymupdf_renderer import (
@@ -56,6 +57,7 @@ class QSignApplication:
         certificate_service = CertificateService()
         general_preferences_service = GeneralPreferencesService(logger=self._logger)
         infinity_dms_client = InfinityDmsClient(logger=self._logger)
+        document_flow_log_service = DocumentFlowLogService()
         template_sync_service = SupabaseTemplateSyncService(
             preferences_service=general_preferences_service,
             template_root="templates",
@@ -111,6 +113,7 @@ class QSignApplication:
             general_preferences_service=general_preferences_service,
             template_sync_service=template_sync_service,
             infinity_dms_client=infinity_dms_client,
+            document_flow_log_service=document_flow_log_service,
             on_general_preferences_saved=lambda _: start_or_restart_local_erp_listener(),
         )
         controller = PDFViewerController(
@@ -122,6 +125,7 @@ class QSignApplication:
             template_repository=template_repository,
             general_preferences_service=general_preferences_service,
             infinity_dms_client=infinity_dms_client,
+            template_sync_service=template_sync_service,
             signature_provider=self._create_signature_provider(),
         )
         view.bind_actions(
@@ -145,6 +149,8 @@ class QSignApplication:
         self._logger.info("QSign building view")
         view.build()
         view.maximize_window()
+        controller.retry_pending_erp_uploads()
+        controller.retry_pending_erp_uploads("dist/signed")
         view.start_erp_auto_refresh()
         start_or_restart_local_erp_listener()
         view.show_startup_user_confirmation()
@@ -206,6 +212,13 @@ class QSignApplication:
             return
         if self._window_close_needs_confirmation(controller, view):
             view.ask_discard_signed_document(
+                lambda: self._shutdown_and_destroy(page, shutdown, event),
+                lambda: None,
+            )
+            return
+        ask_close = getattr(view, "ask_close_application", None)
+        if callable(ask_close):
+            ask_close(
                 lambda: self._shutdown_and_destroy(page, shutdown, event),
                 lambda: None,
             )
@@ -273,4 +286,5 @@ class QSignApplication:
             uploaded=result.uploaded,
             downloaded=result.downloaded,
             skipped=result.skipped,
+            conflicts=[conflict.template_id for conflict in result.conflicts],
         )

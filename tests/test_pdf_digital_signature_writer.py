@@ -162,6 +162,29 @@ class PDFDigitalSignatureWriterTests(unittest.TestCase):
         self.assertIn(b"/ByteRange", content)
         self.assertIn(b"/adbe.pkcs7.detached", content)
 
+    def test_pyhanko_writer_uses_new_field_when_pdf_is_already_signed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.pdf"
+            first_signed = Path(directory) / "first-signed.pdf"
+            second_signed = Path(directory) / "second-signed.pdf"
+            _create_pdf(source)
+            writer = PyHankoDigitalSignatureWriter(
+                certificate_service=FakeExportingCertificateService(),
+                logger=LoggingService.create("qsign.tests.digital_signature_writer"),
+            )
+            area = SignatureArea(page_index=0, x=40, y=50, width=120, height=50)
+
+            writer.sign_pdf(source=source, destination=first_signed, area=area)
+            writer.sign_pdf(source=first_signed, destination=second_signed, area=area)
+
+            with second_signed.open("rb") as output:
+                reader = PdfFileReader(output)
+                signatures = list(reader.embedded_signatures)
+                field_names = {signature.field_name for signature in signatures}
+
+            self.assertEqual(len(signatures), 2)
+            self.assertEqual(field_names, {"Signature1", "Signature2"})
+
 
 class FakeDigitalSignatureWriter(DigitalPDFSignatureWriter):
     def __init__(self) -> None:

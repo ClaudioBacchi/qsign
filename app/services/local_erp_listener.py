@@ -47,6 +47,8 @@ class LocalErpView(Protocol):
 
     def show_error(self, message: str) -> None: ...
 
+    def show_document_flow_downloaded(self, document_name: str) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class LocalErpDocumentRequest:
@@ -63,6 +65,7 @@ class LocalErpDocumentRequest:
 class LocalErpDocumentPayload:
     path: Path
     upload_context: ErpSignedDocumentUploadContext | None = None
+    document_name: str = ""
 
 
 class LocalErpListener:
@@ -188,7 +191,16 @@ class LocalErpListener:
             company=company,
             erp_return_ready=upload_context is not None,
         )
-        return LocalErpDocumentPayload(path=path, upload_context=upload_context)
+        logical_name = (
+            upload_context.logical_name
+            if upload_context is not None and upload_context.logical_name.strip()
+            else request.document_name
+        )
+        return LocalErpDocumentPayload(
+            path=path,
+            upload_context=upload_context,
+            document_name=logical_name,
+        )
 
     def _load_document_storage_info(
         self,
@@ -249,6 +261,9 @@ class LocalErpListener:
         self._view.run_background_task(download_and_open)
 
     def _open_and_activate(self, payload: LocalErpDocumentPayload) -> None:
+        self._view.show_document_flow_downloaded(
+            payload.document_name or payload.path.name
+        )
         self._open_document(str(payload.path), payload.upload_context)
         activate_window = getattr(self._view, "activate_window", None)
         if callable(activate_window):

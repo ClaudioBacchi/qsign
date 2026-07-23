@@ -1,5 +1,6 @@
 """Tests for document navigation state without loading Flet."""
 
+import json
 import unittest
 import tempfile
 from pathlib import Path
@@ -35,6 +36,7 @@ class FakeViewer:
         self.cleared = False
         self.errors: list[str] = []
         self.statuses: list[str] = []
+        self.flow_events: list[tuple[str, str]] = []
         self.manual_mode = False
         self.save_callback = None
         self.cancel_save_callback = None
@@ -78,6 +80,18 @@ class FakeViewer:
 
     def show_status(self, message: str) -> None:
         self.statuses.append(message)
+
+    def show_document_flow_downloaded(self, document_name: str) -> None:
+        self.flow_events.append(("Scaricato", document_name))
+
+    def show_document_flow_signed(self, document_name: str) -> None:
+        self.flow_events.append(("Firmato", document_name))
+
+    def show_document_flow_uploaded(self, document_name: str) -> None:
+        self.flow_events.append(("Caricato", document_name))
+
+    def show_document_flow_upload_failed(self, document_name: str) -> None:
+        self.flow_events.append(("Errore invio", document_name))
 
     def set_manual_signature_mode(self, enabled: bool) -> None:
         self.manual_mode = enabled
@@ -189,6 +203,27 @@ class FailingSignatureProvider:
     def capture_signature(self) -> CapturedSignature:
         self.capture_count += 1
         raise RuntimeError("tablet unavailable")
+
+
+class FakeTemplateSyncResult:
+    def __init__(self, uploaded: int = 0, conflicts: tuple[object, ...] = ()) -> None:
+        self.uploaded = uploaded
+        self.conflicts = conflicts
+
+
+class FakeTemplateSyncConflict:
+    def __init__(self, template_id: str) -> None:
+        self.template_id = template_id
+
+
+class FakeTemplateSyncService:
+    def __init__(self, result: FakeTemplateSyncResult | None = None) -> None:
+        self.result = result or FakeTemplateSyncResult(uploaded=1)
+        self.uploaded_paths: list[Path] = []
+
+    def upload_template(self, path: Path) -> FakeTemplateSyncResult:
+        self.uploaded_paths.append(path)
+        return self.result
 
 
 class PDFViewerControllerTests(unittest.TestCase):
@@ -441,6 +476,75 @@ class PDFViewerControllerTests(unittest.TestCase):
             self.assertIn('"y_offset": 35.0', content)
             self.assertIn('"width": 90.0', content)
             self.assertIn('"height": 45.0', content)
+
+    def test_saving_manual_template_uploads_it_to_supabase(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sync_service = FakeTemplateSyncService()
+            self.controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.template_upload"),
+                pdf_provider=FakePDFProviderWithoutAnchors(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create("qsign.tests.controller.template_upload_detector")
+                ),
+                template_sync_service=sync_service,
+                template_root=directory,
+            )
+
+            self.controller.open_document("sample.pdf")
+            self.controller.set_manual_signature_rectangle(
+                left=20,
+                top=30,
+                width=80,
+                height=40,
+                image_width=200,
+                image_height=200,
+            )
+            self.view.save_callback()
+
+            self.assertEqual(len(sync_service.uploaded_paths), 1)
+            self.assertTrue(sync_service.uploaded_paths[0].name.startswith("learned_"))
+            self.assertEqual(
+                self.view.statuses[-1],
+                f"Template sincronizzato su Supabase: {sync_service.uploaded_paths[0].name}",
+            )
+
+    def test_saving_manual_template_reports_supabase_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sync_service = FakeTemplateSyncService(
+                FakeTemplateSyncResult(
+                    conflicts=(FakeTemplateSyncConflict("learned_sample.json"),)
+                )
+            )
+            self.controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.template_conflict"),
+                pdf_provider=FakePDFProviderWithoutAnchors(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create("qsign.tests.controller.template_conflict_detector")
+                ),
+                template_sync_service=sync_service,
+                template_root=directory,
+            )
+
+            self.controller.open_document("sample.pdf")
+            self.controller.set_manual_signature_rectangle(
+                left=20,
+                top=30,
+                width=80,
+                height=40,
+                image_width=200,
+                image_height=200,
+            )
+            self.view.save_callback()
+
+            self.assertEqual(
+                self.view.errors[-1],
+                "Conflitto template Supabase: learned_sample.json. "
+                "Upload automatico saltato.",
+            )
 
     def test_manual_template_saves_structural_signature(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -700,6 +804,33 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.controller.save_signed_pdf()
 
         self.assertEqual(self.view.errors[-1], "Nessuna firma acquisita")
+
+    def test_auto_save_failure_keeps_signature_visible_and_unsaved(self) -> None:
+        self.service.save_signed_preview.side_effect = RuntimeError(
+            "firma digitale non completata"
+        )
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.save_failure"),
+            general_preferences_service=FakeGeneralPreferencesService(
+                auto_save_signed_documents=True
+            ),
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+
+        controller.apply_mouse_signature(signature)
+
+        self.assertEqual(self.view.errors[-1], "firma digitale non completata")
+        self.assertTrue(controller.has_unsaved_signed_document())
+        self.assertFalse(self.view.cleared)
+        overlay = self.view.pages[-1][4][0]
+        self.assertEqual(overlay.signature_content, signature.content)
 
     def test_open_signature_dialog_uses_wacom_provider_when_available(self) -> None:
         signature = CapturedSignature(
@@ -1141,6 +1272,242 @@ class PDFViewerControllerTests(unittest.TestCase):
             self.assertEqual(upload["logical_dir"], "//Dipendenti/Idoneita/")
             self.assertEqual(upload["logical_name"], "sample_signed.pdf")
             self.assertIn("PDF firmato inviato all'ERP", self.view.statuses)
+            self.assertIn(("Firmato", "sample_signed.pdf"), self.view.flow_events)
+            self.assertIn(("Caricato", "sample_signed.pdf"), self.view.flow_events)
+            self.assertFalse(
+                PDFViewerController._erp_upload_sidecar(signed_path).exists()
+            )
+
+    def test_erp_signed_upload_retries_transient_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_path = Path(directory) / "sample_signed.pdf"
+            signed_path.write_bytes(b"%PDF-signed-content")
+            self.service.save_signed_preview.return_value = signed_path
+            dms_client = FakeInfinityDmsClient(
+                [RuntimeError("rete temporaneamente non disponibile"), "0"]
+            )
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.erp_retry"),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    erp_settings=ErpUserSettings(
+                        document_service_url="https://erp.example.test/soap",
+                        company_id="SALAV",
+                        basic_username="api-user",
+                        basic_password="api-secret",
+                    )
+                ),
+                infinity_dms_client=dms_client,
+            )
+            controller.open_document(
+                "sample.pdf",
+                ErpSignedDocumentUploadContext(
+                    document_id="DOC-1",
+                    logical_dir="//Dipendenti/Idoneita/",
+                    logical_name="sample_signed.pdf",
+                ),
+            )
+            controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+            controller.apply_mouse_signature(
+                CapturedSignature(
+                    content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                    media_type="image/svg+xml",
+                )
+            )
+
+            controller.save_signed_pdf()
+
+            self.assertEqual(len(dms_client.uploads), 2)
+            self.assertEqual(self.view.statuses[-1], "PDF firmato inviato all'ERP")
+            self.assertIn(("Caricato", "sample_signed.pdf"), self.view.flow_events)
+            self.assertEqual(self.view.errors, [])
+
+    def test_document_flow_keeps_original_erp_name_for_unique_signed_file(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_path = (
+                Path(directory)
+                / "89579d0be4304ebb9f91f08d81a611ed_privacy_TEST_4_.pdf"
+            )
+            signed_path.write_bytes(b"%PDF-signed-content")
+            self.service.save_signed_preview.return_value = signed_path
+            dms_client = FakeInfinityDmsClient()
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.erp_flow_name"),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    erp_settings=ErpUserSettings(
+                        document_service_url="https://erp.example.test/soap",
+                        company_id="SALAV",
+                        basic_username="api-user",
+                        basic_password="api-secret",
+                    )
+                ),
+                infinity_dms_client=dms_client,
+            )
+            controller.open_document(
+                "89579d0be4304ebb9f91f08d81a611ed_privacy_TEST_4_.pdf",
+                ErpSignedDocumentUploadContext(
+                    document_id="DOC-1",
+                    logical_dir="//Dipendenti/Privacy/",
+                    logical_name="privacy_TEST(4).pdf",
+                ),
+            )
+            controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+            controller.apply_mouse_signature(
+                CapturedSignature(
+                    content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                    media_type="image/svg+xml",
+                )
+            )
+
+            controller.save_signed_pdf()
+
+            self.assertIn(("Firmato", "privacy_TEST(4).pdf"), self.view.flow_events)
+            self.assertIn(("Caricato", "privacy_TEST(4).pdf"), self.view.flow_events)
+            self.assertNotIn(("Firmato", signed_path.name), self.view.flow_events)
+
+    def test_erp_signed_upload_reports_failure_after_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_path = Path(directory) / "sample_signed.pdf"
+            signed_path.write_bytes(b"%PDF-signed-content")
+            self.service.save_signed_preview.return_value = signed_path
+            dms_client = FakeInfinityDmsClient(
+                [
+                    RuntimeError("errore 1"),
+                    RuntimeError("errore 2"),
+                    RuntimeError("errore 3"),
+                ]
+            )
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.erp_retry_failed"),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    erp_settings=ErpUserSettings(
+                        document_service_url="https://erp.example.test/soap",
+                        company_id="SALAV",
+                        basic_username="api-user",
+                        basic_password="api-secret",
+                    )
+                ),
+                infinity_dms_client=dms_client,
+            )
+            controller.open_document(
+                "sample.pdf",
+                ErpSignedDocumentUploadContext(
+                    document_id="DOC-1",
+                    logical_dir="//Dipendenti/Idoneita/",
+                    logical_name="sample_signed.pdf",
+                ),
+            )
+            controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+            controller.apply_mouse_signature(
+                CapturedSignature(
+                    content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                    media_type="image/svg+xml",
+                )
+            )
+
+            controller.save_signed_pdf()
+
+            self.assertEqual(len(dms_client.uploads), 3)
+            self.assertTrue(signed_path.exists())
+            self.assertTrue(
+                PDFViewerController._erp_upload_sidecar(signed_path).exists()
+            )
+            self.assertIn(
+                "invio documento firmato all'ERP fallito dopo 3 tentativi",
+                self.view.errors[-1],
+            )
+            self.assertIn(("Errore invio", "sample_signed.pdf"), self.view.flow_events)
+            self.assertNotIn(("Caricato", "sample_signed.pdf"), self.view.flow_events)
+
+    def test_erp_signed_upload_retries_non_zero_copy_file_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_path = Path(directory) / "sample_signed.pdf"
+            signed_path.write_bytes(b"%PDF-signed-content")
+            self.service.save_signed_preview.return_value = signed_path
+            dms_client = FakeInfinityDmsClient(["1", "2", "0"])
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.erp_non_zero"),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    erp_settings=ErpUserSettings(
+                        document_service_url="https://erp.example.test/soap",
+                        company_id="SALAV",
+                        basic_username="api-user",
+                        basic_password="api-secret",
+                    )
+                ),
+                infinity_dms_client=dms_client,
+            )
+            controller.open_document(
+                "sample.pdf",
+                ErpSignedDocumentUploadContext(
+                    document_id="DOC-1",
+                    logical_dir="//Dipendenti/Idoneita/",
+                    logical_name="sample_signed.pdf",
+                ),
+            )
+            controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+            controller.apply_mouse_signature(
+                CapturedSignature(
+                    content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                    media_type="image/svg+xml",
+                )
+            )
+
+            controller.save_signed_pdf()
+
+            self.assertEqual(len(dms_client.uploads), 3)
+            self.assertEqual(self.view.statuses[-1], "PDF firmato inviato all'ERP")
+            self.assertIn(("Caricato", "sample_signed.pdf"), self.view.flow_events)
+            self.assertFalse(
+                PDFViewerController._erp_upload_sidecar(signed_path).exists()
+            )
+
+    def test_retry_pending_erp_uploads_sends_saved_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_path = Path(directory) / "sample_signed.pdf"
+            signed_path.write_bytes(b"%PDF-signed-content")
+            sidecar = PDFViewerController._erp_upload_sidecar(signed_path)
+            sidecar.write_text(
+                json.dumps(
+                    {
+                        "signed_path": str(signed_path),
+                        "document_id": "DOC-1",
+                        "logical_dir": "//Dipendenti/Idoneita/",
+                        "logical_name": "sample_signed.pdf",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            dms_client = FakeInfinityDmsClient()
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.erp_pending"),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    erp_settings=ErpUserSettings(
+                        document_service_url="https://erp.example.test/soap",
+                        company_id="SALAV",
+                        basic_username="api-user",
+                        basic_password="api-secret",
+                    )
+                ),
+                infinity_dms_client=dms_client,
+            )
+
+            controller.retry_pending_erp_uploads(directory)
+
+            self.assertEqual(len(dms_client.uploads), 1)
+            self.assertEqual(dms_client.uploads[0]["content"], b"%PDF-signed-content")
+            self.assertFalse(sidecar.exists())
 
     def test_unsigned_save_prompt_blocks_page_change_after_signature(self) -> None:
         self.controller.open_document("sample.pdf")
@@ -1398,6 +1765,66 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual([overlay.label for overlay in overlays], ["Zona firma 1", "Zona firma 2"])
         self.assertEqual(overlays[0].left, 20)
         self.assertEqual(overlays[1].left, 110)
+
+    def test_updating_recognized_template_saves_added_signature_box(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.update_template_box"),
+                pdf_provider=FakePDFProviderWithoutAnchors(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create(
+                        "qsign.tests.controller.update_template_box_detector"
+                    )
+                ),
+                template_repository=FakeTemplateRepository(),
+                template_root=directory,
+            )
+
+            controller.open_document("sample.pdf")
+            self.assertEqual(len(self.view.pages[-1][4]), 1)
+
+            controller.add_signature_box()
+            controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+            self.view.save_callback()
+
+            saved_templates = list(Path(directory).glob("learned_*.json"))
+            self.assertEqual(len(saved_templates), 1)
+            content = saved_templates[0].read_text(encoding="utf-8")
+            self.assertIn('"placement_id": "manual-signature"', content)
+            self.assertIn('"placement_id": "manual-signature-2"', content)
+            self.assertIn('"x_offset": 20', content)
+            self.assertIn('"x_offset": 110.0', content)
+
+    def test_updating_learned_template_keeps_recognized_template_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.update_learned_name"),
+                pdf_provider=FakePDFProviderWithoutAnchors(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create(
+                        "qsign.tests.controller.update_learned_name_detector"
+                    )
+                ),
+                template_repository=FakeRecognizedLearnedTemplateRepository(),
+                template_root=directory,
+            )
+
+            controller.open_document("sample_signed_reopened.pdf")
+            controller.add_signature_box()
+            controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+            self.view.save_callback()
+
+            original_template = Path(directory) / "learned_existing_model.json"
+            derived_template = Path(directory) / "learned_documento_speciale.json"
+            self.assertTrue(original_template.exists())
+            self.assertFalse(derived_template.exists())
+            content = original_template.read_text(encoding="utf-8")
+            self.assertIn('"placement_id": "manual-signature"', content)
+            self.assertIn('"placement_id": "manual-signature-2"', content)
 
     def test_learned_manual_boxes_are_used_even_when_demo_anchor_matches(self) -> None:
         self.controller = PDFViewerController(
@@ -1693,12 +2120,19 @@ class FakeGeneralPreferencesService:
 
 
 class FakeInfinityDmsClient:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        results: list[str | Exception] | None = None,
+    ) -> None:
         self.uploads: list[dict[str, object]] = []
+        self.results = list(results or ["0"])
 
     def upload_document(self, **kwargs: object) -> str:
         self.uploads.append(kwargs)
-        return "OK"
+        result = self.results.pop(0) if self.results else "0"
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 class FakePDFProvider:
@@ -2212,6 +2646,44 @@ class FakeTemplateRepository:
                 template_id="recognized-demo",
                 code="RECOGNIZED_DEMO",
                 name="Recognized demo",
+                document_type="manual_signature_flow",
+                version="0.1.0",
+                state=TemplateState.DRAFT,
+                recognition_rules=(
+                    RecognitionRule(
+                        rule_id="contains-special",
+                        rule_type="literal",
+                        expression="Documento Speciale",
+                        required=True,
+                    ),
+                ),
+                placement_rules=(
+                    PlacementRule(
+                        placement_id="manual-signature",
+                        role="signer",
+                        anchor_id="manual",
+                        side="manual",
+                        alignment="manual",
+                        x_offset=20,
+                        y_offset=30,
+                        width=80,
+                        height=40,
+                    ),
+                ),
+            ),
+        )
+
+    def get_template(self, template_id: str) -> Template:
+        return self.list_templates()[0]
+
+
+class FakeRecognizedLearnedTemplateRepository:
+    def list_templates(self) -> tuple[Template, ...]:
+        return (
+            Template(
+                template_id="learned_existing_model",
+                code="LEARNED_EXISTING_MODEL",
+                name="Existing learned model",
                 document_type="manual_signature_flow",
                 version="0.1.0",
                 state=TemplateState.DRAFT,

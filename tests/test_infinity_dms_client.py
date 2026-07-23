@@ -97,7 +97,7 @@ class InfinityDmsClientTests(unittest.TestCase):
         transport = FakeSoapTransport(
             [
                 _soap_response("connectResponse", "connectReturn", "CTX-1"),
-                _soap_response("copyFileResponse", "copyFileReturn", "OK"),
+                _soap_response("copyFileResponse", "copyFileReturn", "0"),
                 _soap_response("disconnectResponse", "disconnectReturn", "OK"),
             ]
         )
@@ -111,7 +111,7 @@ class InfinityDmsClientTests(unittest.TestCase):
             logical_name="signed.pdf",
         )
 
-        self.assertEqual(result, "OK")
+        self.assertEqual(result, "0")
         self.assertEqual(len(transport.requests), 3)
         copy_file = _body_operation(transport.requests[1].data)
         self.assertEqual(_local_name(copy_file.tag), "copyFile")

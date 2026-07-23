@@ -2,6 +2,8 @@
 
 import asyncio
 import base64
+from datetime import datetime
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +23,7 @@ from app.services.general_preferences_service import (
     SupabaseTableResult,
 )
 from models.document import Rectangle
+from services.logging.document_flow_log_service import DocumentFlowEvent
 from ui.main_view import MainView
 
 VALID_PDF_BYTES = b""
@@ -189,6 +192,48 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(table.rows[0].cells[0].content.value, "NOME_DOCUMENTO.pdf")
         self.assertEqual(table.rows[0].cells[1].content.value, "2026-07-16 09:29:57")
         self.assertEqual(len(table.rows[0].cells), 2)
+
+    def test_erp_documents_grid_uses_dark_text_on_light_home(self) -> None:
+        page = FakePage()
+        service = _erp_download_service()
+        client = FakeInfinityDmsClient(_valid_pdf_bytes())
+        view = MainView(
+            page,
+            general_preferences_service=service,
+            infinity_dms_client=client,
+        )
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+        )
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
+
+        view.refresh_erp_documents()
+
+        content_column = view._home_view.content.content
+        table = content_column.controls[1].content.controls[0]
+        refresh_button = content_column.controls[0].controls[2]
+        open_button = _find_button(table, "Apri")
+
+        self.assertEqual(
+            content_column.controls[0].controls[0].color,
+            view._ft.Colors.GREY_900,
+        )
+        self.assertEqual(
+            [column.label.color for column in table.columns],
+            [view._ft.Colors.GREY_900] * 3,
+        )
+        self.assertEqual(
+            [cell.content.color for cell in table.rows[0].cells[:2]],
+            [view._ft.Colors.GREY_900, view._ft.Colors.GREY_900],
+        )
+        self.assertEqual(refresh_button.content.color, view._ft.Colors.BLUE_800)
+        self.assertEqual(open_button.content.color, view._ft.Colors.BLUE_800)
 
     def test_erp_documents_refresh_runs_in_background_and_keeps_local_open_available(self) -> None:
         page = FakePage()
@@ -383,7 +428,11 @@ class MainViewTests(unittest.TestCase):
         _find_button(table, "Apri").on_click(None)
 
         self.assertEqual(len(opened_documents), 1)
-        self.assertIsNone(view._home_view.content.content.controls[2].color)
+        self.assertEqual(view._document_flow_events[0]["status"], "Scaricato")
+        self.assertEqual(
+            view._document_flow_events[0]["document"],
+            "NOME_DOCUMENTO.pdf",
+        )
         opened_path = Path(opened_documents[0][0])
         upload_context = opened_documents[0][1]
         self.assertIsNotNone(upload_context)
@@ -963,6 +1012,84 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(view._home_view.alignment, view._ft.Alignment(0, 0))
         self.assertEqual(view._viewer_layers.fit, view._ft.StackFit.EXPAND)
 
+    def test_document_flow_grid_tracks_daily_document_steps(self) -> None:
+        page = FakePage()
+        flow_log = FakeDocumentFlowLogService()
+        view = MainView(page, document_flow_log_service=flow_log)
+
+        view.show_document_flow_downloaded("privacy_ROSSI.pdf")
+        view.show_document_flow_signed("privacy_ROSSI.pdf")
+        view.show_document_flow_uploaded("privacy_ROSSI.pdf")
+
+        content = view._home_view.content
+        header = content.content.controls[0]
+        table = content.content.controls[1].content.controls[0]
+        rows = table.rows
+
+        self.assertEqual(header.controls[0].value, "Flussi documenti")
+        self.assertEqual(header.controls[2].semantics_label, "QSign")
+        self.assertEqual(header.controls[2].width, 170)
+        self.assertEqual(
+            [(event.document, event.status) for event in flow_log.appended],
+            [
+                ("privacy_ROSSI.pdf", "Scaricato"),
+                ("privacy_ROSSI.pdf", "Firmato"),
+                ("privacy_ROSSI.pdf", "Caricato"),
+            ],
+        )
+        self.assertEqual([row.cells[1].content.content.value for row in rows], [
+            "Caricato",
+            "Firmato",
+            "Scaricato",
+        ])
+        self.assertEqual(
+            rows[0].color,
+            view._document_flow_row_color("Caricato"),
+        )
+        self.assertIsNone(rows[0].cells[0].content.bgcolor)
+        self.assertTrue(all(row.cells[0].content.content.color for row in rows))
+        self.assertFalse(view._viewer_placeholder.visible)
+
+    def test_document_flow_grid_loads_today_events_from_log(self) -> None:
+        page = FakePage()
+        flow_log = FakeDocumentFlowLogService(
+            events=[
+                DocumentFlowEvent(
+                    document="aperto.pdf",
+                    status="Scaricato",
+                    timestamp=datetime(2026, 7, 23, 9, 15, 0),
+                ),
+                DocumentFlowEvent(
+                    document="firmato.pdf",
+                    status="Firmato",
+                    timestamp=datetime(2026, 7, 23, 9, 20, 0),
+                ),
+            ]
+        )
+        view = MainView(page, document_flow_log_service=flow_log)
+
+        view.build()
+
+        content = view._home_view.content
+        table = content.content.controls[1].content.controls[0]
+        self.assertEqual(
+            [row.cells[0].content.content.value for row in table.rows],
+            ["firmato.pdf", "aperto.pdf"],
+        )
+        self.assertFalse(view._viewer_placeholder.visible)
+
+    def test_document_flow_grid_keeps_logo_when_log_has_no_today_events(self) -> None:
+        page = FakePage()
+        view = MainView(
+            page,
+            document_flow_log_service=FakeDocumentFlowLogService(events=[]),
+        )
+
+        view.build()
+
+        self.assertIs(view._home_view.content, view._viewer_placeholder)
+        self.assertTrue(view._viewer_placeholder.visible)
+
     def test_viewer_background_is_gray_behind_loaded_pdfs(self) -> None:
         page = FakePage()
         view = MainView(page)
@@ -1010,6 +1137,8 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(menu_bar.controls[1].controls[2].width, 180)
 
         icon_toolbar = toolbar.controls[1]
+        self.assertEqual(icon_toolbar.controls[11], view._security_button)
+        self.assertTrue(getattr(icon_toolbar.controls[12], "expand", False))
         tooltips = [
             getattr(control, "tooltip", None)
             for control in icon_toolbar.controls
@@ -1126,6 +1255,30 @@ class MainViewTests(unittest.TestCase):
             self.assertEqual(
                 page.dialog.content.content.controls[1].content.content.value,
                 "Nessun documento firmato trovato",
+            )
+
+    def test_signed_history_default_includes_legacy_dist_signed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            current_dir = base / "documenti_firmati"
+            legacy_dir = base / "dist" / "signed"
+            current_dir.mkdir()
+            legacy_dir.mkdir(parents=True)
+            current_pdf = current_dir / "corrente.pdf"
+            legacy_pdf = legacy_dir / "precedente.pdf"
+            current_pdf.write_bytes(b"%PDF-current")
+            legacy_pdf.write_bytes(b"%PDF-legacy")
+            page = FakePage()
+            view = MainView(page)
+            view._signed_history_directory = current_dir
+            view._signed_history_legacy_directory = legacy_dir
+            view._include_signed_history_legacy_directory = True
+
+            documents = view._signed_history_documents()
+
+            self.assertEqual(
+                sorted(path.name for path in documents),
+                ["corrente.pdf", "precedente.pdf"],
             )
 
     def test_signed_history_filters_and_sorts_documents(self) -> None:
@@ -1427,6 +1580,32 @@ class MainViewTests(unittest.TestCase):
             self.assertEqual(
                 page.dialog.content.content.controls[3].value,
                 "Scaricati 1, invariati 0",
+            )
+
+    def test_template_upload_reports_conflicts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = Path(directory)
+            (template_dir / "learned_alpha.json").write_text("{}", encoding="utf-8")
+            page = FakePage()
+            sync_service = FakeTemplateSyncService(template_dir)
+            sync_service.upload_result = FakeTemplateSyncResult(
+                uploaded=0,
+                skipped=1,
+                conflicts=(FakeTemplateSyncConflict("learned_alpha.json"),),
+            )
+            view = MainView(
+                page,
+                template_sync_service=sync_service,
+                learned_template_directory=template_dir,
+            )
+
+            view.show_template_history()
+            button_row = page.dialog.content.content.controls[2]
+            button_row.controls[2].on_click(None)
+
+            self.assertEqual(
+                page.dialog.content.content.controls[3].value,
+                "Caricati 0; conflitti: learned_alpha.json",
             )
 
     def test_anchor_overlay_is_rendered_above_pdf_image(self) -> None:
@@ -1733,6 +1912,32 @@ class MainViewTests(unittest.TestCase):
         self.assertIn(b"polyline", captured[0].content)
         self.assertTrue(page.dialog_popped)
 
+    def test_close_application_dialog_confirms_or_cancels_shutdown(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        calls: list[str] = []
+
+        view.ask_close_application(
+            lambda: calls.append("confirm"),
+            lambda: calls.append("cancel"),
+        )
+
+        self.assertEqual(page.dialog.title.value, "Chiudi qSign")
+        self.assertEqual([_button_label(button) for button in page.dialog.actions], [
+            "Annulla",
+            "Chiudi",
+        ])
+
+        page.dialog.actions[0].on_click(None)
+        self.assertEqual(calls, ["cancel"])
+
+        view.ask_close_application(
+            lambda: calls.append("confirm"),
+            lambda: calls.append("cancel"),
+        )
+        page.dialog.actions[1].on_click(None)
+        self.assertEqual(calls, ["cancel", "confirm"])
+
     def test_signature_dialog_confirms_current_stroke_even_without_pan_end(self) -> None:
         page = FakePage()
         view = MainView(page)
@@ -1766,7 +1971,7 @@ class MainViewTests(unittest.TestCase):
     def test_information_uses_the_current_flet_dialog_api(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             app_config = Path(directory) / "app.yaml"
-            app_config.write_text('version: "01.001.001"', encoding="utf-8")
+            app_config.write_text('version: "01.001"', encoding="utf-8")
             page = FakePage()
             view = MainView(page, app_config_path=app_config)
 
@@ -1775,7 +1980,7 @@ class MainViewTests(unittest.TestCase):
             self.assertIsNone(page.dialog.title)
             controls = page.dialog.content.content.controls
             self.assertTrue(controls[0].content.src.startswith("data:image/png;base64,"))
-            self.assertEqual(controls[1].value, "Versione: 01.001.001")
+            self.assertEqual(controls[1].value, "Versione: 01.001")
             site_button = controls[3].controls[1]
             support_button = controls[4].controls[1]
             footer = controls[5]
@@ -1794,6 +1999,27 @@ class MainViewTests(unittest.TestCase):
                 page.launched_urls,
                 ["https://queensrl.net", "mailto:assistenza@qss.it"],
             )
+
+    def test_information_reads_version_from_pyinstaller_bundle_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bundle_root = Path(directory)
+            config_dir = bundle_root / "config"
+            config_dir.mkdir()
+            (config_dir / "app.yaml").write_text('version: "02.000"', encoding="utf-8")
+            page = FakePage()
+            view = MainView(page, app_config_path=Path("config") / "app.yaml")
+            original_meipass = getattr(sys, "_MEIPASS", None)
+            sys._MEIPASS = str(bundle_root)
+            try:
+                view.show_information()
+            finally:
+                if original_meipass is None:
+                    delattr(sys, "_MEIPASS")
+                else:
+                    sys._MEIPASS = original_meipass
+
+            controls = page.dialog.content.content.controls
+            self.assertEqual(controls[1].value, "Versione: 02.000")
 
     def test_certificate_child_dialog_replaces_preferences_dialog(self) -> None:
         page = FakePage()
@@ -3032,6 +3258,7 @@ class FakeTemplateSyncResult:
         deleted: int = 0,
         remote_deleted: int = 0,
         remote_remaining: int = 0,
+        conflicts: tuple[object, ...] = (),
     ) -> None:
         self.uploaded = uploaded
         self.downloaded = downloaded
@@ -3039,6 +3266,12 @@ class FakeTemplateSyncResult:
         self.deleted = deleted
         self.remote_deleted = remote_deleted
         self.remote_remaining = remote_remaining
+        self.conflicts = conflicts
+
+
+class FakeTemplateSyncConflict:
+    def __init__(self, template_id: str) -> None:
+        self.template_id = template_id
 
 
 class FakeTemplateSyncService:
@@ -3046,6 +3279,7 @@ class FakeTemplateSyncService:
         self._template_dir = template_dir
         self.delete_count = 0
         self.remote_delete_count = 0
+        self.upload_result = FakeTemplateSyncResult(uploaded=1)
 
     def download_templates(self) -> FakeTemplateSyncResult:
         (self._template_dir / "learned_synced.json").write_text(
@@ -3055,7 +3289,7 @@ class FakeTemplateSyncService:
         return FakeTemplateSyncResult(downloaded=1)
 
     def upload_templates(self) -> FakeTemplateSyncResult:
-        return FakeTemplateSyncResult(uploaded=1)
+        return self.upload_result
 
     def sync_templates(self) -> FakeTemplateSyncResult:
         self.download_templates()
@@ -3071,4 +3305,31 @@ class FakeTemplateSyncService:
         return FakeTemplateSyncResult(
             deleted=deleted,
             remote_deleted=self.remote_delete_count or deleted,
+        )
+
+
+class FakeDocumentFlowLogService:
+    def __init__(
+        self,
+        events: list[DocumentFlowEvent] | None = None,
+    ) -> None:
+        self.events = tuple(events or ())
+        self.appended: list[DocumentFlowEvent] = []
+
+    def events_for_day(self):
+        return self.events
+
+    def append_event(
+        self,
+        *,
+        document: str,
+        status: str,
+        timestamp: datetime | None = None,
+    ) -> None:
+        self.appended.append(
+            DocumentFlowEvent(
+                document=document,
+                status=status,
+                timestamp=timestamp or datetime(2026, 7, 23, 12, 0, 0),
+            )
         )

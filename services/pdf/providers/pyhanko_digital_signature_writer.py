@@ -11,6 +11,7 @@ from typing import Callable
 
 import pymupdf
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign import fields, signers
 from pyhanko.stamp import NoOpStampStyle, TextStampStyle
 
@@ -46,6 +47,10 @@ class PyHankoDigitalSignatureWriter(DigitalPDFSignatureWriter):
         field_name: str = "Signature1",
     ) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
+        selected_field_name = _next_available_signature_field_name(
+            source,
+            preferred_name=field_name,
+        )
         password = secrets.token_urlsafe(24)
         with tempfile.TemporaryDirectory(prefix="qsign-cert-") as directory:
             pfx_path = Path(directory) / "certificate.pfx"
@@ -59,7 +64,7 @@ class PyHankoDigitalSignatureWriter(DigitalPDFSignatureWriter):
             )
             metadata_values = self._signature_metadata()
             metadata = signers.PdfSignatureMetadata(
-                field_name=field_name,
+                field_name=selected_field_name,
                 reason=metadata_values.reason,
                 location=metadata_values.location or None,
                 contact_info=metadata_values.contact_info or None,
@@ -67,7 +72,7 @@ class PyHankoDigitalSignatureWriter(DigitalPDFSignatureWriter):
                 subfilter=fields.SigSeedSubFilter.ADOBE_PKCS7_DETACHED,
             )
             field_spec = fields.SigFieldSpec(
-                sig_field_name=field_name,
+                sig_field_name=selected_field_name,
                 on_page=area.page_index,
                 box=self._signature_box(source, area),
             )
@@ -94,6 +99,7 @@ class PyHankoDigitalSignatureWriter(DigitalPDFSignatureWriter):
             destination=str(destination),
             certificate=certificate.name,
             thumbprint=certificate.thumbprint,
+            field_name=selected_field_name,
         )
 
     @staticmethod
@@ -191,3 +197,37 @@ def _sign_pdf_with_pyhanko(
             output=output_file,
             appearance_text_params=appearance_text_params,
         )
+
+
+def _next_available_signature_field_name(
+    source: Path,
+    *,
+    preferred_name: str = "Signature1",
+) -> str:
+    existing_names = _existing_signature_field_names(source)
+    if preferred_name not in existing_names:
+        return preferred_name
+    prefix = "Signature"
+    index = 1
+    if preferred_name.startswith(prefix):
+        suffix = preferred_name[len(prefix) :]
+        if suffix.isdigit():
+            index = int(suffix)
+    while True:
+        index += 1
+        candidate = f"{prefix}{index}"
+        if candidate not in existing_names:
+            return candidate
+
+
+def _existing_signature_field_names(source: Path) -> set[str]:
+    try:
+        with source.open("rb") as handle:
+            reader = PdfFileReader(handle)
+            return {
+                str(name)
+                for name, _, _ in fields.enumerate_sig_fields(reader)
+                if str(name).strip()
+            }
+    except Exception:
+        return set()

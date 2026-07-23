@@ -1,8 +1,8 @@
 #ifndef MyAppVersion
-#define MyAppVersion "00.000.000"
+#define MyAppVersion "00.000"
 #endif
 #ifndef PortableSource
-#define PortableSource "..\release\QSign-00.000.000\portable\QSign"
+#define PortableSource "..\release\QSign-00.000\portable\QSign"
 #endif
 #ifndef OutputDir
 #define OutputDir "..\release"

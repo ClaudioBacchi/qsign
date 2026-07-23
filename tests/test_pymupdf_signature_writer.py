@@ -3,12 +3,17 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pymupdf
 
 from services.logging.logging_service import LoggingService
 from services.pdf.pdf_signature import SignatureArea
-from services.pdf.providers.pymupdf_signature_writer import PyMuPDFSignatureWriter
+from services.pdf.providers import pymupdf_signature_writer
+from services.pdf.providers.pymupdf_signature_writer import (
+    PyMuPDFSignatureWriter,
+    _publish_without_overwrite,
+)
 from services.signature.signature_service import CapturedSignature
 
 
@@ -119,6 +124,33 @@ class PyMuPDFSignatureWriterTests(unittest.TestCase):
                 )
 
             self.assertEqual(destination.read_bytes(), b"%PDF-existing")
+
+    def test_publish_retries_temporary_permission_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.pdf"
+            destination = Path(directory) / "signed.pdf"
+            source.write_bytes(b"%PDF-signed")
+            replace_calls = 0
+            real_replace = pymupdf_signature_writer.os.replace
+
+            def flaky_replace(source_path, destination_path) -> None:
+                nonlocal replace_calls
+                replace_calls += 1
+                if replace_calls == 1:
+                    raise PermissionError(5, "Accesso negato")
+                real_replace(source_path, destination_path)
+
+            with patch.object(
+                pymupdf_signature_writer.os,
+                "replace",
+                side_effect=flaky_replace,
+            ), patch.object(pymupdf_signature_writer.time, "sleep") as sleep:
+                _publish_without_overwrite(source, destination)
+
+            self.assertEqual(replace_calls, 2)
+            sleep.assert_called_once()
+            self.assertEqual(destination.read_bytes(), b"%PDF-signed")
+            self.assertFalse(source.exists())
 
     def test_separate_svg_strokes_are_not_connected_in_saved_pdf(self) -> None:
         writer = PyMuPDFSignatureWriter(

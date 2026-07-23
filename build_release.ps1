@@ -5,6 +5,9 @@ param(
     [string]$Release = "",
 
     [Parameter()]
+    [switch]$MajorRelease,
+
+    [Parameter()]
     [string]$InnoCompiler = "",
 
     [Parameter()]
@@ -22,18 +25,72 @@ $BuildDirectory = Join-Path $ProjectRoot "build"
 $DistributionDirectory = Join-Path $ProjectRoot "dist"
 $ReleaseRoot = Join-Path $ProjectRoot "release"
 $InnoScript = Join-Path $ProjectRoot "installer\qsign.iss"
+$AppConfigPath = Join-Path $ProjectRoot "config\app.yaml"
 
 function Get-QSignAppVersion {
-    $ConfigPath = Join-Path $ProjectRoot "config\app.yaml"
-    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
-        throw "Application version file not found: $ConfigPath"
+    if (-not (Test-Path -LiteralPath $AppConfigPath -PathType Leaf)) {
+        throw "Application version file not found: $AppConfigPath"
     }
-    foreach ($Line in Get-Content -LiteralPath $ConfigPath) {
+    foreach ($Line in Get-Content -LiteralPath $AppConfigPath) {
         if ($Line -match '^\s*version\s*:\s*["'']?([^"'']+)["'']?\s*$') {
-            return $Matches[1].Trim()
+            return ConvertTo-QSignReleaseVersion -Version $Matches[1].Trim()
         }
     }
     throw "Unable to read application version from config\app.yaml."
+}
+
+function ConvertTo-QSignReleaseVersion {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    if ($Version -match '^(\d{1,2})\.(\d{1,3})$') {
+        return ('{0:00}.{1:000}' -f [int]$Matches[1], [int]$Matches[2])
+    }
+    if ($Version -match '^(\d{1,2})\.(\d{1,3})\.(\d{1,3})$') {
+        return ('{0:00}.{1:000}' -f [int]$Matches[1], [int]$Matches[3])
+    }
+    throw "Unsupported release version '$Version'. Expected format 00.000."
+}
+
+function Get-Next-QSignReleaseVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$Version,
+        [bool]$Major = $false
+    )
+
+    $Normalized = ConvertTo-QSignReleaseVersion -Version $Version
+    if ($Normalized -notmatch '^(\d{2})\.(\d{3})$') {
+        throw "Unsupported release version '$Normalized'. Expected format 00.000."
+    }
+    $MajorNumber = [int]$Matches[1]
+    $BuildNumber = [int]$Matches[2]
+    if ($Major) {
+        return ('{0:00}.000' -f ($MajorNumber + 1))
+    }
+    return ('{0:00}.{1:000}' -f $MajorNumber, ($BuildNumber + 1))
+}
+
+function Set-QSignAppVersion {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    $Content = Get-Content -LiteralPath $AppConfigPath
+    $Updated = $false
+    $NextContent = foreach ($Line in $Content) {
+        if ($Line -match '^(\s*)version\s*:\s*["'']?([^"'']+)["'']?\s*$') {
+            $Updated = $true
+            "$($Matches[1])version: `"$Version`""
+        }
+        else {
+            $Line
+        }
+    }
+    if (-not $Updated) {
+        throw "Unable to update application version in config\app.yaml."
+    }
+    [System.IO.File]::WriteAllLines(
+        $AppConfigPath,
+        [string[]]$NextContent,
+        [System.Text.UTF8Encoding]::new($false)
+    )
 }
 
 function Get-InnoCompilerPath {
@@ -91,7 +148,8 @@ print(flet_desktop.ensure_client_cached())
     if (Test-Path -LiteralPath $DestinationPath) {
         Remove-Item -LiteralPath $DestinationPath -Force
     }
-    Compress-Archive -Path (Join-Path $CacheDirectory "*") -DestinationPath $DestinationPath -CompressionLevel Optimal
+    Compress-Archive -Path (Join-Path $CacheDirectory "*") -DestinationPath $DestinationPath -CompressionLevel Optimal -ErrorAction Stop
+    Test-ZipArchive -Path $DestinationPath
 }
 
 function Compress-WithRetry {
@@ -110,10 +168,14 @@ function Compress-WithRetry {
             if (Test-Path -LiteralPath $DestinationPath) {
                 Remove-Item -LiteralPath $DestinationPath -Force
             }
-            Compress-Archive -Path $Path -DestinationPath $DestinationPath -CompressionLevel Optimal
+            Compress-Archive -Path $Path -DestinationPath $DestinationPath -CompressionLevel Optimal -ErrorAction Stop
+            Test-ZipArchive -Path $DestinationPath
             return
         }
         catch {
+            if (Test-Path -LiteralPath $DestinationPath) {
+                Remove-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
+            }
             if ($Index -eq $Attempts) {
                 throw
             }
@@ -122,8 +184,50 @@ function Compress-WithRetry {
     }
 }
 
-if (-not $Release) {
-    $Release = Get-QSignAppVersion
+function Test-ZipArchive {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    try {
+        $Archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        try {
+            if ($Archive.Entries.Count -eq 0) {
+                throw "Zip archive is empty: $Path"
+            }
+            foreach ($Entry in $Archive.Entries) {
+                if ($Entry.FullName.EndsWith("/")) {
+                    continue
+                }
+                $Stream = $Entry.Open()
+                try {
+                    $Buffer = New-Object byte[] 1
+                    [void]$Stream.Read($Buffer, 0, 1)
+                }
+                finally {
+                    $Stream.Dispose()
+                }
+            }
+        }
+        finally {
+            $Archive.Dispose()
+        }
+    }
+    catch {
+        throw "Zip archive validation failed: $Path. $($_.Exception.Message)"
+    }
+}
+
+if ($Release) {
+    $Release = ConvertTo-QSignReleaseVersion -Version $Release
+    Set-QSignAppVersion -Version $Release
+}
+else {
+    $CurrentRelease = Get-QSignAppVersion
+    $Release = Get-Next-QSignReleaseVersion -Version $CurrentRelease -Major $MajorRelease.IsPresent
+    Set-QSignAppVersion -Version $Release
 }
 
 $ReleaseDirectory = Join-Path $ReleaseRoot "QSign-$Release"

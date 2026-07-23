@@ -4,6 +4,7 @@ from pathlib import Path
 from collections.abc import Sequence
 import os
 import tempfile
+import time
 import uuid
 
 import pymupdf
@@ -19,6 +20,9 @@ from services.signature.svg_signature import (
     fit_svg_signature_strokes,
     parse_svg_signature,
 )
+
+_PUBLISH_ATTEMPTS = 5
+_PUBLISH_RETRY_DELAY_SECONDS = 0.12
 
 
 class PyMuPDFSignatureWriter(VisiblePDFSignatureWriter):
@@ -164,7 +168,18 @@ def _publish_without_overwrite(source: Path, destination: Path) -> None:
         descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(descriptor)
         reserved = True
-        os.replace(source, destination)
+        last_error: PermissionError | None = None
+        for attempt in range(1, _PUBLISH_ATTEMPTS + 1):
+            try:
+                os.replace(source, destination)
+                return
+            except PermissionError as error:
+                last_error = error
+                if attempt == _PUBLISH_ATTEMPTS:
+                    raise
+                time.sleep(_PUBLISH_RETRY_DELAY_SECONDS)
+        if last_error is not None:
+            raise last_error
     except FileExistsError:
         raise FileExistsError(
             f"Signed PDF destination already exists: {destination}"

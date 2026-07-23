@@ -1,6 +1,7 @@
 """Tests for Supabase learned template synchronization."""
 
 import json
+import os
 import tempfile
 import unittest
 import urllib.error
@@ -33,7 +34,8 @@ class SupabaseTemplateSyncServiceTests(unittest.TestCase):
             result = service.upload_templates()
 
             self.assertEqual(result.uploaded, 1)
-            request = requests[0]
+            self.assertEqual(requests[0].method, "GET")
+            request = requests[1]
             self.assertEqual(
                 request.full_url,
                 "https://demo.supabase.co/rest/v1/SaluteLavoro?on_conflict=template_id",
@@ -44,6 +46,59 @@ class SupabaseTemplateSyncServiceTests(unittest.TestCase):
             self.assertEqual(payload[0]["template_id"], "learned_privacy.json")
             self.assertEqual(payload[0]["json"], {"template_id": "learned_privacy"})
             self.assertIn("updated_at", payload[0])
+
+    def test_upload_reports_conflict_when_remote_template_is_newer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_root = Path(directory)
+            local = template_root / "learned_privacy.json"
+            local.write_text(
+                json.dumps({"template_id": "learned_privacy", "x": 1}),
+                encoding="utf-8",
+            )
+            os.utime(local, (1_700_000_000, 1_700_000_000))
+            rows = [
+                {
+                    "template_id": "learned_privacy.json",
+                    "json": {"template_id": "learned_privacy", "x": 2},
+                    "updated_at": "2026-08-01T08:00:00+00:00",
+                }
+            ]
+            requests = []
+            service = SupabaseTemplateSyncService(
+                preferences_service=FakePreferencesService(),
+                template_root=template_root,
+                opener=_recording_opener(requests, json.dumps(rows).encode("utf-8")),
+            )
+
+            result = service.upload_templates()
+
+            self.assertEqual(result.uploaded, 0)
+            self.assertEqual(result.skipped, 1)
+            self.assertEqual(result.conflicts[0].template_id, "learned_privacy.json")
+            self.assertEqual([request.method for request in requests], ["GET"])
+
+    def test_upload_one_template_sends_only_that_template(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_root = Path(directory)
+            alpha = template_root / "learned_alpha.json"
+            beta = template_root / "learned_beta.json"
+            alpha.write_text(json.dumps({"template_id": "alpha"}), encoding="utf-8")
+            beta.write_text(json.dumps({"template_id": "beta"}), encoding="utf-8")
+            requests = []
+            service = SupabaseTemplateSyncService(
+                preferences_service=FakePreferencesService(),
+                template_root=template_root,
+                opener=_recording_opener(requests, b"[]"),
+            )
+
+            result = service.upload_template(beta)
+
+            self.assertEqual(result.uploaded, 1)
+            payload = json.loads(requests[1].data.decode("utf-8"))
+            self.assertEqual(
+                [row["template_id"] for row in payload],
+                ["learned_beta.json"],
+            )
 
     def test_upload_logs_template_activity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -88,6 +143,38 @@ class SupabaseTemplateSyncServiceTests(unittest.TestCase):
             self.assertEqual(
                 json.loads((template_root / "learned_privacy.json").read_text()),
                 {"template_id": "learned_privacy"},
+            )
+
+    def test_download_reports_conflict_when_remote_would_overwrite_local(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_root = Path(directory)
+            local = template_root / "learned_privacy.json"
+            local.write_text(
+                json.dumps({"template_id": "learned_privacy", "x": 1}),
+                encoding="utf-8",
+            )
+            os.utime(local, (1_700_000_000, 1_700_000_000))
+            rows = [
+                {
+                    "template_id": "learned_privacy.json",
+                    "json": {"template_id": "learned_privacy", "x": 2},
+                    "updated_at": "2026-08-01T08:00:00+00:00",
+                }
+            ]
+            service = SupabaseTemplateSyncService(
+                preferences_service=FakePreferencesService(),
+                template_root=template_root,
+                opener=_recording_opener([], json.dumps(rows).encode("utf-8")),
+            )
+
+            result = service.download_templates()
+
+            self.assertEqual(result.downloaded, 0)
+            self.assertEqual(result.skipped, 1)
+            self.assertEqual(result.conflicts[0].template_id, "learned_privacy.json")
+            self.assertEqual(
+                json.loads(local.read_text(encoding="utf-8")),
+                {"template_id": "learned_privacy", "x": 1},
             )
 
     def test_delete_removes_remote_and_local_learned_templates(self) -> None:

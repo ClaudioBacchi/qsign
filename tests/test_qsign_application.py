@@ -34,15 +34,22 @@ class QSignApplicationTests(unittest.TestCase):
 
         QSignApplication._set_window_visible(page, False)
 
-    def test_bind_shutdown_destroys_window_on_close_event(self) -> None:
+    def test_window_close_asks_confirmation_before_shutdown(self) -> None:
         page = FakePage()
         controller = FakeController()
+        view = FakeView()
         app = QSignApplication()
 
-        app._bind_shutdown(page, controller)
+        app._bind_shutdown(page, controller, view)
         page.window.on_event(SimpleNamespace(type="close"))
 
         self.assertTrue(page.window.prevent_close)
+        self.assertEqual(controller.shutdown_count, 0)
+        self.assertEqual(page.window.destroy_count, 0)
+        self.assertIsNotNone(view.close_callback)
+
+        view.close_callback()
+
         self.assertEqual(controller.shutdown_count, 1)
         self.assertEqual(page.destroy_task_count, 1)
         self.assertEqual(page.window.destroy_count, 1)
@@ -73,6 +80,7 @@ class QSignApplicationTests(unittest.TestCase):
         self.assertEqual(controller.shutdown_count, 0)
         self.assertEqual(page.window.destroy_count, 0)
         self.assertIsNotNone(view.discard_callback)
+        self.assertIsNone(view.close_callback)
 
         view.discard_callback()
 
@@ -129,10 +137,16 @@ class FakeView:
     def __init__(self) -> None:
         self.discard_callback = None
         self.cancel_discard_callback = None
+        self.close_callback = None
+        self.cancel_close_callback = None
 
     def ask_discard_signed_document(self, on_confirm, on_cancel) -> None:
         self.discard_callback = on_confirm
         self.cancel_discard_callback = on_cancel
+
+    def ask_close_application(self, on_confirm, on_cancel) -> None:
+        self.close_callback = on_confirm
+        self.cancel_close_callback = on_cancel
 
 
 if __name__ == "__main__":

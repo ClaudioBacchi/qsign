@@ -22,7 +22,7 @@ class PDFService:
         logger: LoggingService,
         renderer: PDFRenderer | None = None,
         signature_writer: VisiblePDFSignatureWriter | None = None,
-        signed_output_directory: str | Path = Path("dist") / "signed",
+        signed_output_directory: str | Path = Path("documenti_firmati"),
     ) -> None:
         self._backend = backend
         self._logger = logger

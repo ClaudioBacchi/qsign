@@ -246,6 +246,25 @@ class PDFServiceTests(unittest.TestCase):
         self.assertEqual(writer.calls[0][1], first)
         self.assertEqual(writer.calls[1][1], second)
 
+    def test_default_signed_preview_directory_is_not_a_build_artifact(self) -> None:
+        writer = FakeSignatureWriter()
+        service = PDFService(
+            backend=self.backend,
+            signature_writer=writer,
+            logger=LoggingService.create("qsign.tests"),
+        )
+        service.open_document(self.source)
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        area = SignatureArea(page_index=0, x=0, y=0, width=10, height=10)
+
+        saved_path = service.save_signed_preview(signature, area)
+
+        self.assertEqual(saved_path.parent, Path("documenti_firmati"))
+        self.assertNotEqual(saved_path.parent, Path("dist") / "signed")
+
     def test_same_filename_from_different_directories_use_distinct_paths(self) -> None:
         writer = FakeSignatureWriter()
         signed_directory = Path(self.temporary_directory.name) / "signed"
