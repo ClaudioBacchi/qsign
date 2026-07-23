@@ -55,16 +55,34 @@ esplicitamente l'ambiente virtuale.
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-## Preparazione release
+## Rilascio Windows
 
-Lo script attuale prepara solamente cartelle e controlli preliminari:
+Lo script crea il bundle PyInstaller, il pacchetto portable e l'installer Inno
+Setup versionato leggendo la versione da `config/app.yaml`:
 
 ```powershell
-.\build_release.ps1 -Release "0.2.1"
+.\build_release.ps1
 ```
 
-PyInstaller, firma dell'eseguibile e copia della documentazione sono
-placeholder per milestone future.
+Output principale:
+
+```text
+release/QSign-<version>/portable/QSign/
+release/QSign-<version>/QSign-portable-<version>.zip
+release/QSign-<version>/installer/QSignSetup-<version>.exe
+```
+
+Opzioni utili:
+
+```powershell
+.\build_release.ps1 -Release "01.001.001"
+.\build_release.ps1 -SkipTests
+.\build_release.ps1 -SkipInstaller
+.\build_release.ps1 -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+```
+
+L'installer non include `config/preferences.json`: le preferenze e le credenziali
+restano locali alla macchina dell'utente.
 
 ## Struttura del progetto
 

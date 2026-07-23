@@ -1,9 +1,17 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateNotNullOrEmpty()]
     [ValidatePattern("^[0-9A-Za-z][0-9A-Za-z._-]*$")]
-    [string]$Release = "0.2.1"
+    [string]$Release = "",
+
+    [Parameter()]
+    [string]$InnoCompiler = "",
+
+    [Parameter()]
+    [switch]$SkipTests,
+
+    [Parameter()]
+    [switch]$SkipInstaller
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,11 +21,121 @@ $PythonExecutable = Join-Path $VirtualEnvironment "Scripts\python.exe"
 $BuildDirectory = Join-Path $ProjectRoot "build"
 $DistributionDirectory = Join-Path $ProjectRoot "dist"
 $ReleaseRoot = Join-Path $ProjectRoot "release"
-$ReleaseDirectory = Join-Path $ReleaseRoot $Release
+$InnoScript = Join-Path $ProjectRoot "installer\qsign.iss"
+
+function Get-QSignAppVersion {
+    $ConfigPath = Join-Path $ProjectRoot "config\app.yaml"
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        throw "Application version file not found: $ConfigPath"
+    }
+    foreach ($Line in Get-Content -LiteralPath $ConfigPath) {
+        if ($Line -match '^\s*version\s*:\s*["'']?([^"'']+)["'']?\s*$') {
+            return $Matches[1].Trim()
+        }
+    }
+    throw "Unable to read application version from config\app.yaml."
+}
+
+function Get-InnoCompilerPath {
+    param([string]$RequestedPath)
+
+    if ($RequestedPath) {
+        if (Test-Path -LiteralPath $RequestedPath -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $RequestedPath).Path
+        }
+        throw "Inno Setup compiler not found: $RequestedPath"
+    }
+
+    $Command = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
+    if ($Command) {
+        return $Command.Source
+    }
+
+    $Candidates = @(
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 5\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 5\ISCC.exe"
+    )
+    foreach ($Candidate in $Candidates) {
+        if ($Candidate -and (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
+            return $Candidate
+        }
+    }
+    throw "Inno Setup compiler ISCC.exe not found. Install Inno Setup 6 or pass -InnoCompiler."
+}
+
+function New-FletRuntimeArchive {
+    param([string]$DestinationPath)
+
+    $RuntimeDirectory = Split-Path -Parent $DestinationPath
+    New-Item -ItemType Directory -Path $RuntimeDirectory -Force | Out-Null
+
+    $RuntimeInfo = & $PythonExecutable -c @"
+import flet_desktop
+print(flet_desktop.get_artifact_filename())
+print(flet_desktop.ensure_client_cached())
+"@
+    if ($LASTEXITCODE -ne 0 -or $RuntimeInfo.Count -lt 2) {
+        throw "Unable to prepare Flet desktop runtime."
+    }
+    $ArtifactName = [string]$RuntimeInfo[0]
+    $CacheDirectory = [string]$RuntimeInfo[1]
+    if ($ArtifactName -ne "flet-windows.zip") {
+        throw "Unexpected Flet runtime artifact for Windows release: $ArtifactName"
+    }
+    if (-not (Test-Path -LiteralPath $CacheDirectory -PathType Container)) {
+        throw "Flet desktop runtime cache not found: $CacheDirectory"
+    }
+
+    if (Test-Path -LiteralPath $DestinationPath) {
+        Remove-Item -LiteralPath $DestinationPath -Force
+    }
+    Compress-Archive -Path (Join-Path $CacheDirectory "*") -DestinationPath $DestinationPath -CompressionLevel Optimal
+}
+
+function Compress-WithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath,
+
+        [int]$Attempts = 5
+    )
+
+    for ($Index = 1; $Index -le $Attempts; $Index++) {
+        try {
+            if (Test-Path -LiteralPath $DestinationPath) {
+                Remove-Item -LiteralPath $DestinationPath -Force
+            }
+            Compress-Archive -Path $Path -DestinationPath $DestinationPath -CompressionLevel Optimal
+            return
+        }
+        catch {
+            if ($Index -eq $Attempts) {
+                throw
+            }
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
+if (-not $Release) {
+    $Release = Get-QSignAppVersion
+}
+
+$ReleaseDirectory = Join-Path $ReleaseRoot "QSign-$Release"
+$PortableDirectory = Join-Path $ReleaseDirectory "portable"
+$PortableAppDirectory = Join-Path $PortableDirectory "QSign"
+$InstallerDirectory = Join-Path $ReleaseDirectory "installer"
+$PortableZip = Join-Path $ReleaseDirectory "QSign-portable-$Release.zip"
+$FletRuntimeArchive = Join-Path $BuildDirectory "flet_runtime\flet-windows.zip"
 
 Set-Location -LiteralPath $ProjectRoot
 
-Write-Host "QSign release preparation: $Release"
+Write-Host "QSign release: $Release"
 
 if (-not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf)) {
     throw "Virtual environment not found. Create .venv before preparing a release."
@@ -30,28 +148,57 @@ if ($LASTEXITCODE -ne 0) {
 
 $PythonMinorVersion = & $PythonExecutable -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 if ($LASTEXITCODE -ne 0 -or $PythonMinorVersion -ne "3.14") {
-    throw "QSign release preparation requires Python 3.14. Found: $PythonVersion"
+    throw "QSign release requires Python 3.14. Found: $PythonVersion"
 }
-
 Write-Host "Python environment verified: $PythonVersion"
 
-foreach ($Directory in @($BuildDirectory, $DistributionDirectory)) {
+if (-not $SkipTests) {
+    Write-Host "Running test suite..."
+    & $PythonExecutable -m unittest
+    if ($LASTEXITCODE -ne 0) {
+        throw "Test suite failed."
+    }
+}
+
+foreach ($Directory in @($BuildDirectory, $DistributionDirectory, $ReleaseDirectory)) {
     if (Test-Path -LiteralPath $Directory) {
         Remove-Item -LiteralPath $Directory -Recurse -Force
     }
-    New-Item -ItemType Directory -Path $Directory | Out-Null
+}
+New-Item -ItemType Directory -Path $BuildDirectory, $DistributionDirectory, $PortableDirectory, $InstallerDirectory -Force | Out-Null
+
+Write-Host "Preparing Flet desktop runtime..."
+New-FletRuntimeArchive -DestinationPath $FletRuntimeArchive
+
+Write-Host "Building PyInstaller bundle..."
+& $PythonExecutable -m PyInstaller --noconfirm --clean --distpath $DistributionDirectory --workpath (Join-Path $BuildDirectory "pyinstaller") QSign.spec
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller build failed."
+}
+if (-not (Test-Path -LiteralPath (Join-Path $DistributionDirectory "QSign\QSign.exe") -PathType Leaf)) {
+    throw "PyInstaller output not found: dist\QSign\QSign.exe"
 }
 
-New-Item -ItemType Directory -Path $ReleaseRoot -Force | Out-Null
-New-Item -ItemType Directory -Path $ReleaseDirectory -Force | Out-Null
+Write-Host "Staging portable release..."
+Copy-Item -LiteralPath (Join-Path $DistributionDirectory "QSign") -Destination $PortableDirectory -Recurse
+if (Test-Path -LiteralPath $PortableZip) {
+    Remove-Item -LiteralPath $PortableZip -Force
+}
+Compress-WithRetry -Path $PortableAppDirectory -DestinationPath $PortableZip
 
-# FUTURE: invoke PyInstaller after its configuration and dependency are approved.
-Write-Host "[placeholder] PyInstaller packaging"
+if (-not $SkipInstaller) {
+    $Compiler = Get-InnoCompilerPath -RequestedPath $InnoCompiler
+    Write-Host "Building Inno Setup installer..."
+    & $Compiler "/DMyAppVersion=$Release" "/DPortableSource=$PortableAppDirectory" "/DOutputDir=$InstallerDirectory" $InnoScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "Inno Setup build failed."
+    }
+    $InstallerPath = Join-Path $InstallerDirectory "QSignSetup-$Release.exe"
+    if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
+        throw "Installer output not found: $InstallerPath"
+    }
+    Write-Host "Installer: $InstallerPath"
+}
 
-# FUTURE: sign the generated executable with the Queen code-signing certificate.
-Write-Host "[placeholder] Executable signing"
-
-# FUTURE: copy the approved end-user and release documentation.
-Write-Host "[placeholder] Documentation copy"
-
-Write-Host "Release structure prepared in: $ReleaseDirectory"
+Write-Host "Portable zip: $PortableZip"
+Write-Host "Release completed in: $ReleaseDirectory"
