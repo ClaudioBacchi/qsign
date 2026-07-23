@@ -980,6 +980,29 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             ErpDocumentStorageInfo("DOC-1", "NOME.pdf", "//A/B/"),
         )
 
+    def test_erp_document_storage_info_accepts_slogicaldir_alias(self) -> None:
+        service = GeneralPreferencesService(
+            opener=lambda request, *, timeout: SimpleNamespace(
+                status=200,
+                read=lambda: b'{"data":[{"vfcodiceid":"DOC-1","vfname":"NOME.pdf",'
+                b'"sLogicalDir":"//Dipendenti/Idoneita/"}]}',
+            )
+        )
+
+        result = service.fetch_erp_document_storage_info(
+            "DOC-1",
+            ErpUserSettings(
+                documents_url="https://erp.example.test/documents",
+                basic_username="api-user",
+                basic_password="api-secret",
+            ),
+        )
+
+        self.assertEqual(
+            result.info,
+            ErpDocumentStorageInfo("DOC-1", "NOME.pdf", "//Dipendenti/Idoneita/"),
+        )
+
     def test_erp_documents_are_not_loaded_without_url_or_user(self) -> None:
         requests = []
 

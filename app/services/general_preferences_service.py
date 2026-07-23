@@ -1206,7 +1206,7 @@ def _erp_document_storage_info_from_row(
     return ErpDocumentStorageInfo(
         document_id=document_id,
         name=_case_insensitive_row_text(row, "vfname"),
-        logical_path=_case_insensitive_row_text(row, "vfpath"),
+        logical_path=_erp_document_logical_path_from_row(row),
     )
 
 
@@ -1237,7 +1237,14 @@ def _erp_document_from_row(
         document_id=str(row.get("vfcodiceid") or "").strip(),
         auth_code=str(row.get("vfauthcode") or "").strip(),
         checkout_by=checkout_by,
-        logical_path=_case_insensitive_row_text(row, "vfpath"),
+        logical_path=_erp_document_logical_path_from_row(row),
+    )
+
+
+def _erp_document_logical_path_from_row(row: dict[str, Any]) -> str:
+    return _case_insensitive_row_text(row, "vfpath") or _case_insensitive_row_text(
+        row,
+        "slogicaldir",
     )
 
 
