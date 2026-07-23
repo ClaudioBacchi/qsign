@@ -354,18 +354,21 @@ class MainViewTests(unittest.TestCase):
                     "DOC-1",
                     "AUTH-1",
                     "20",
+                    "//Dipendenti/Idoneita/",
                 ),
             ),
         )
         client = FakeInfinityDmsClient(_valid_pdf_bytes())
-        opened_paths: list[str] = []
+        opened_documents: list[tuple[str, object | None]] = []
         view = MainView(
             page,
             general_preferences_service=service,
             infinity_dms_client=client,
         )
         view.bind_actions(
-            on_open_document=lambda path: opened_paths.append(path),
+            on_open_document=lambda path, context=None: opened_documents.append(
+                (path, context)
+            ),
             on_close=lambda: None,
             on_previous=lambda: None,
             on_next=lambda: None,
@@ -379,9 +382,14 @@ class MainViewTests(unittest.TestCase):
         table = view._home_view.content.content.controls[1].content.controls[0]
         _find_button(table, "Apri").on_click(None)
 
-        self.assertEqual(len(opened_paths), 1)
+        self.assertEqual(len(opened_documents), 1)
         self.assertIsNone(view._home_view.content.content.controls[2].color)
-        opened_path = Path(opened_paths[0])
+        opened_path = Path(opened_documents[0][0])
+        upload_context = opened_documents[0][1]
+        self.assertIsNotNone(upload_context)
+        self.assertEqual(upload_context.document_id, "DOC-1")
+        self.assertEqual(upload_context.logical_dir, "//Dipendenti/Idoneita/")
+        self.assertEqual(upload_context.logical_name, "../NOME_DOCUMENTO.pdf")
         self.assertTrue(opened_path.is_file())
         self.assertEqual(opened_path.read_bytes(), _valid_pdf_bytes())
         self.assertNotIn("..", opened_path.name)

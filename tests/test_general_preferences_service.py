@@ -864,6 +864,7 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                 b'{"vfname":"NOME_DOCUMENTO.pdf","vfdescri":"Visita",'
                 b'"vfcheckoutdate":"2026-07-16 09:29:57","vfcheckoutby":"20",'
                 b'"vfcodiceid":"DOC-1","vfauthcode":"secret",'
+                b'"vfpath":"//Dipendenti/Idoneita/",'
                 b'"vfphysicname":"hidden.pdf"},'
                 b'{"vfname":"ALTRO.pdf","vfcheckoutby":"21"}'
                 b"]}"
@@ -894,6 +895,7 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
                         "DOC-1",
                         "secret",
                         "20",
+                        "//Dipendenti/Idoneita/",
                     ),
                 ),
             ),

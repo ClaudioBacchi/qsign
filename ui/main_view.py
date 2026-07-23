@@ -28,6 +28,7 @@ from app.services.general_preferences_service import (
     GeneralPreferencesService,
     SupabaseSettings,
 )
+from app.services.erp_document_context import ErpSignedDocumentUploadContext
 from app.services.infinity_dms_client import (
     InfinityDmsClient,
     InfinityDmsCredentials,
@@ -138,7 +139,7 @@ class MainView:
         )
         self._erp_temp_session_id = erp_temp_session_id or uuid.uuid4().hex
         self._erp_temp_session_root: Path | None = None
-        self._on_open_document: Callable[[str], None] | None = None
+        self._on_open_document: Callable[..., None] | None = None
         self._on_close: Callable[[], None] | None = None
         self._on_previous: Callable[[], None] | None = None
         self._on_next: Callable[[], None] | None = None
@@ -269,7 +270,7 @@ class MainView:
 
     def bind_actions(
         self,
-        on_open_document: Callable[[str], None],
+        on_open_document: Callable[..., None],
         on_close: Callable[[], None],
         on_previous: Callable[[], None],
         on_next: Callable[[], None],
@@ -1211,6 +1212,20 @@ class MainView:
     def _erp_document_has_download_keys(document: ErpDocument) -> bool:
         return bool(document.document_id.strip() and document.auth_code.strip())
 
+    @staticmethod
+    def _erp_upload_context_for_document(
+        document: ErpDocument,
+    ) -> ErpSignedDocumentUploadContext | None:
+        logical_dir = str(getattr(document, "logical_path", "") or "").strip()
+        logical_name = document.name.strip()
+        if not logical_dir or not logical_name:
+            return None
+        return ErpSignedDocumentUploadContext(
+            document_id=document.document_id.strip(),
+            logical_dir=logical_dir,
+            logical_name=logical_name,
+        )
+
     def _open_erp_document(self, document: ErpDocument, status_text: object) -> None:
         if (
             self._general_preferences_service is None
@@ -1241,6 +1256,7 @@ class MainView:
                 self._release_erp_download_lock()
                 return
             path: Path | None = None
+            upload_context: ErpSignedDocumentUploadContext | None = None
             try:
                 content = self._infinity_dms_client.download_document(
                     service_url=settings.document_service_url.strip(),
@@ -1256,6 +1272,7 @@ class MainView:
                     self._release_erp_download_lock()
                     return
                 path = self._save_erp_temp_pdf(document.name, content)
+                upload_context = self._erp_upload_context_for_document(document)
             except Exception:
                 if self._closing.is_set():
                     self._discard_erp_temp_pdf(path)
@@ -1264,6 +1281,7 @@ class MainView:
                 self.run_ui_task(
                     lambda: self._finish_erp_document_download(
                         status_text,
+                        None,
                         None,
                         "Download documento ERP fallito",
                         selected_user_id,
@@ -1279,6 +1297,7 @@ class MainView:
                 lambda: self._finish_erp_document_download(
                     status_text,
                     path,
+                    upload_context,
                     "",
                     selected_user_id,
                     user_generation,
@@ -1298,6 +1317,7 @@ class MainView:
         self,
         status_text: object,
         path: Path | None,
+        erp_upload_context: ErpSignedDocumentUploadContext | None,
         error_message: str,
         expected_user_id: str,
         expected_user_generation: int,
@@ -1321,9 +1341,34 @@ class MainView:
                 return
             self._set_erp_download_status(status_text, "")
             if self._on_open_document is not None:
-                self._on_open_document(str(path))
+                self._call_open_document(str(path), erp_upload_context)
         finally:
             self._release_erp_download_lock()
+
+    def _call_open_document(
+        self,
+        path: str,
+        erp_upload_context: ErpSignedDocumentUploadContext | None = None,
+    ) -> None:
+        if self._on_open_document is None:
+            return
+        if erp_upload_context is None:
+            self._on_open_document(path)
+            return
+        try:
+            signature = inspect.signature(self._on_open_document)
+        except (TypeError, ValueError):
+            self._on_open_document(path)
+            return
+        parameters = tuple(signature.parameters.values())
+        accepts_context = any(
+            parameter.kind == inspect.Parameter.VAR_POSITIONAL
+            for parameter in parameters
+        ) or len(parameters) >= 2
+        if accepts_context:
+            self._on_open_document(path, erp_upload_context)
+            return
+        self._on_open_document(path)
 
     def _save_erp_temp_pdf(self, document_name: str, content: bytes) -> Path:
         temp_root = self._erp_temp_root()

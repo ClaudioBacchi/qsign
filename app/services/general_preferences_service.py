@@ -65,6 +65,7 @@ class ErpDocument:
     document_id: str = ""
     auth_code: str = ""
     checkout_by: str = ""
+    logical_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1236,6 +1237,7 @@ def _erp_document_from_row(
         document_id=str(row.get("vfcodiceid") or "").strip(),
         auth_code=str(row.get("vfauthcode") or "").strip(),
         checkout_by=checkout_by,
+        logical_path=_case_insensitive_row_text(row, "vfpath"),
     )
 
 
