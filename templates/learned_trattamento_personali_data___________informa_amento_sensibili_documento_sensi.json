@@ -13,7 +13,7 @@
     {
       "rule_id": "manual-filename-stem",
       "rule_type": "literal",
-      "expression": "851011_sn7aopkbcc",
+      "expression": "2b24fe8895314d2c9d886080bb4bd0f2_privacy_000000000052050_GHINASSI_ENNIO_MASSIMO_10_",
       "scope": "document",
       "required": false,
       "weight": 0.25
@@ -37,7 +37,7 @@
     {
       "rule_id": "manual-visual-signature",
       "rule_type": "visual_hash",
-      "expression": "000000003ffffffc3f847c443834fc7c3ffffffc0ffffff000003fc000003f8000003f001fc316301ffffff81ff8000007e4000007fffb581fe000001ffffff81ffffff81fffff781ffb80000ffffff807d7f00007ffff681ffe00001ffffff80ef7ce9007fe8d201fff57101af685f01fffec60066000000000000000000000",
+      "expression": "000000003ffffffc3f847c443834fc7c3ffffffc0ffffff000003ffe00003fe000003f001fc316301ffffff81ff8000007e4000007fffb581fe000001ffffff81ffffff81fffff781ffb80000ffffff807d7f00007ffff681ffe00001ffffff80ef7ce9007fe8d201fff57101af685f01fffec60066000000000000000000000",
       "scope": "document",
       "required": true,
       "weight": 30.0
@@ -107,31 +107,41 @@
       "weight": 1.25
     }
   ],
-  "anchor_rules": [],
+  "anchor_rules": [
+    {
+      "anchor_id": "manual-learned-anchor",
+      "name": "Anchor appreso manualmente",
+      "search_type": "text",
+      "expression": "In fede L’interessato",
+      "scope": "document",
+      "occurrence_policy": "first",
+      "required": false
+    }
+  ],
   "placement_rules": [
+    {
+      "placement_id": "relative-signature",
+      "role": "signer",
+      "anchor_id": "manual-learned-anchor",
+      "side": "relative",
+      "alignment": "manual",
+      "x_offset": -62.939849853515625,
+      "y_offset": 31.5714111328125,
+      "width": 188.0,
+      "height": 58.0,
+      "page_index": null,
+      "required": true
+    },
     {
       "placement_id": "manual-signature",
       "role": "signer",
       "anchor_id": "manual",
       "side": "manual",
       "alignment": "manual",
-      "x_offset": 376.5650329589844,
-      "y_offset": 479.9052734375,
-      "width": 110.0,
-      "height": 40.0,
-      "page_index": 1,
-      "required": true
-    },
-    {
-      "placement_id": "manual-signature-2",
-      "role": "signer",
-      "anchor_id": "manual",
-      "side": "manual",
-      "alignment": "manual",
-      "x_offset": 97.5,
-      "y_offset": 453.0,
-      "width": 137.0,
-      "height": 80.0,
+      "x_offset": 337.5,
+      "y_offset": 479.0,
+      "width": 188.0,
+      "height": 58.0,
       "page_index": 1,
       "required": true
     }

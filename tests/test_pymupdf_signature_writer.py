@@ -120,6 +120,107 @@ class PyMuPDFSignatureWriterTests(unittest.TestCase):
 
             self.assertEqual(destination.read_bytes(), b"%PDF-existing")
 
+    def test_separate_svg_strokes_are_not_connected_in_saved_pdf(self) -> None:
+        writer = PyMuPDFSignatureWriter(
+            logger=LoggingService.create("qsign.tests.signature_writer.strokes")
+        )
+        signature = CapturedSignature(
+            content=(
+                b"<svg xmlns='http://www.w3.org/2000/svg' "
+                b"width='100' height='100' viewBox='0 0 100 100'>"
+                b"<polyline points='10,10 90,10'/>"
+                b"<polyline points='10,90 90,90'/></svg>"
+            ),
+            media_type="image/svg+xml",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "qsign-sample_signed.pdf"
+
+            writer.save_with_visible_signature(
+                source=self.sample,
+                destination=destination,
+                signature=signature,
+                area=SignatureArea(
+                    page_index=0,
+                    x=100,
+                    y=600,
+                    width=100,
+                    height=100,
+                ),
+            )
+
+            saved = pymupdf.open(destination)
+            try:
+                drawings = saved.load_page(0).get_drawings()
+            finally:
+                saved.close()
+
+        lines = [
+            item
+            for drawing in drawings
+            for item in drawing["items"]
+            if item[0] == "l"
+            and 100 <= item[1].x <= 200
+            and 600 <= item[1].y <= 700
+            and 100 <= item[2].x <= 200
+            and 600 <= item[2].y <= 700
+        ]
+        self.assertGreaterEqual(len(lines), 2)
+        self.assertTrue(all(line[1].y == line[2].y for line in lines))
+
+    def test_open_svg_polyline_is_not_closed_in_saved_pdf(self) -> None:
+        writer = PyMuPDFSignatureWriter(
+            logger=LoggingService.create("qsign.tests.signature_writer.open_polyline")
+        )
+        signature = CapturedSignature(
+            content=(
+                b"<svg xmlns='http://www.w3.org/2000/svg' "
+                b"width='100' height='100' viewBox='0 0 100 100'>"
+                b"<polyline points='10,10 90,10 90,90'/></svg>"
+            ),
+            media_type="image/svg+xml",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "qsign-sample_signed.pdf"
+
+            writer.save_with_visible_signature(
+                source=self.sample,
+                destination=destination,
+                signature=signature,
+                area=SignatureArea(
+                    page_index=0,
+                    x=100,
+                    y=600,
+                    width=100,
+                    height=100,
+                ),
+            )
+
+            saved = pymupdf.open(destination)
+            try:
+                drawings = saved.load_page(0).get_drawings()
+            finally:
+                saved.close()
+
+        lines = [
+            item
+            for drawing in drawings
+            for item in drawing["items"]
+            if item[0] == "l"
+            and 100 <= item[1].x <= 200
+            and 600 <= item[1].y <= 700
+            and 100 <= item[2].x <= 200
+            and 600 <= item[2].y <= 700
+        ]
+        diagonal_lines = [
+            line
+            for line in lines
+            if line[1].x != line[2].x and line[1].y != line[2].y
+        ]
+        self.assertEqual(diagonal_lines, [])
+
 
 if __name__ == "__main__":
     unittest.main()

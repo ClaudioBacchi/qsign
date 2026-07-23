@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 from app.services.general_preferences_service import (
     ErpDocument,
+    ErpDocumentStorageInfo,
+    ErpDocumentStorageInfoResult,
     ErpDocumentsResult,
     ErpUser,
     ErpUserSettings,
@@ -906,6 +908,75 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             "Basic YXBpLXVzZXI6YXBpLXNlY3JldA==",
         )
         self.assertEqual(requests[0][1], 8)
+
+    def test_erp_document_storage_info_is_loaded_by_document_id(self) -> None:
+        requests = []
+
+        def opener(request, *, timeout):
+            requests.append((request, timeout))
+            body = (
+                b'{"data":['
+                b'{"vfcodiceid":"DOC-1","vfname":"NOME_DOCUMENTO.pdf",'
+                b'"vfpath":"//Dipendenti/Idoneita/","vfunknown":"kept-raw"}'
+                b"]}"
+            )
+            return SimpleNamespace(status=200, read=lambda: body)
+
+        service = GeneralPreferencesService(opener=opener)
+
+        result = service.fetch_erp_document_storage_info(
+            "DOC-1",
+            ErpUserSettings(
+                documents_url="https://erp.example.test/documents",
+                basic_username="api-user",
+                basic_password="api-secret",
+            ),
+        )
+
+        self.assertEqual(
+            result,
+            ErpDocumentStorageInfoResult(
+                True,
+                "Metadati documento ERP caricati",
+                ErpDocumentStorageInfo(
+                    document_id="DOC-1",
+                    name="NOME_DOCUMENTO.pdf",
+                    logical_path="//Dipendenti/Idoneita/",
+                ),
+            ),
+        )
+        self.assertEqual(
+            requests[0][0].full_url,
+            "https://erp.example.test/documents?pVFCODICEID=DOC-1",
+        )
+        self.assertEqual(requests[0][0].headers["Accept"], "application/json")
+        self.assertEqual(
+            requests[0][0].headers["Authorization"],
+            "Basic YXBpLXVzZXI6YXBpLXNlY3JldA==",
+        )
+        self.assertEqual(requests[0][1], 8)
+
+    def test_erp_document_storage_info_uses_single_filtered_row_without_id(self) -> None:
+        service = GeneralPreferencesService(
+            opener=lambda request, *, timeout: SimpleNamespace(
+                status=200,
+                read=lambda: b'{"data":[{"vfname":"NOME.pdf","vfpath":"//A/B/"}]}',
+            )
+        )
+
+        result = service.fetch_erp_document_storage_info(
+            "DOC-1",
+            ErpUserSettings(
+                documents_url="https://erp.example.test/documents",
+                basic_username="api-user",
+                basic_password="api-secret",
+            ),
+        )
+
+        self.assertEqual(
+            result.info,
+            ErpDocumentStorageInfo("DOC-1", "NOME.pdf", "//A/B/"),
+        )
 
     def test_erp_documents_are_not_loaded_without_url_or_user(self) -> None:
         requests = []

@@ -34,6 +34,9 @@ class TemplateSyncResult:
     uploaded: int = 0
     downloaded: int = 0
     skipped: int = 0
+    deleted: int = 0
+    remote_deleted: int = 0
+    remote_remaining: int = 0
 
 
 class SupabaseTemplateSyncService:
@@ -50,6 +53,7 @@ class SupabaseTemplateSyncService:
         self._template_root = Path(template_root)
         self._opener = opener or urllib.request.urlopen
         self._logger = logger
+        self._suppressed_remote_template_ids: set[str] = set()
 
     def list_local_templates(self) -> tuple[LearnedTemplateFile, ...]:
         if not self._template_root.is_dir():
@@ -110,6 +114,9 @@ class SupabaseTemplateSyncService:
         self._template_root.mkdir(parents=True, exist_ok=True)
         for row in remote_rows:
             template_id = str(row.get("template_id") or "")
+            if template_id in self._suppressed_remote_template_ids:
+                skipped += 1
+                continue
             if not template_id.startswith("learned_") or not template_id.endswith(".json"):
                 skipped += 1
                 continue
@@ -156,6 +163,57 @@ class SupabaseTemplateSyncService:
         )
         return result
 
+    def delete_templates(self) -> TemplateSyncResult:
+        settings = self._validated_settings()
+        self._log_info(
+            "Template delete started",
+            table=settings.table_name,
+            template_root=str(self._template_root),
+        )
+        remote_template_ids = [
+            template_id
+            for template_id in self._remote_template_ids(settings)
+            if template_id.startswith("learned_") and template_id.endswith(".json")
+        ]
+        requested_remote_ids = set(remote_template_ids)
+        for template_id in remote_template_ids:
+            self._request(
+                settings,
+                method="DELETE",
+                path=(
+                    f"/rest/v1/{self._quoted_table(settings)}"
+                    f"?template_id=eq.{urllib.parse.quote(template_id, safe='')}"
+                ),
+                headers={"Prefer": "return=minimal"},
+            )
+        remaining_remote_ids = requested_remote_ids.intersection(
+            self._remote_template_ids(settings)
+        )
+        if remaining_remote_ids:
+            self._delete_remote_templates_via_rpc(settings)
+            remaining_remote_ids = requested_remote_ids.intersection(
+                self._remote_template_ids(settings)
+            )
+        self._suppressed_remote_template_ids.update(remaining_remote_ids)
+        remote_deleted = len(requested_remote_ids) - len(remaining_remote_ids)
+        deleted, failed = self._delete_local_templates()
+        if failed:
+            raise SupabaseTemplateSyncServiceError(
+                f"Template locali non eliminati: {len(failed)}"
+            )
+        result = TemplateSyncResult(
+            deleted=deleted,
+            remote_deleted=remote_deleted,
+            remote_remaining=len(remaining_remote_ids),
+        )
+        self._log_info(
+            "Template delete completed",
+            deleted=result.deleted,
+            remote_deleted=result.remote_deleted,
+            remote_remaining=result.remote_remaining,
+        )
+        return result
+
     def _fetch_remote_rows(self, settings: SupabaseSettings) -> list[dict[str, Any]]:
         payload = self._request(
             settings,
@@ -168,6 +226,47 @@ class SupabaseTemplateSyncService:
         if not isinstance(payload, list):
             return []
         return [row for row in payload if isinstance(row, dict)]
+
+    def _remote_template_ids(self, settings: SupabaseSettings) -> list[str]:
+        return [
+            str(row.get("template_id") or "")
+            for row in self._fetch_remote_rows(settings)
+        ]
+
+    def _delete_remote_templates_via_rpc(self, settings: SupabaseSettings) -> None:
+        try:
+            result = self._request(
+                settings,
+                method="POST",
+                path="/rest/v1/rpc/qsign_delete_learned_templates",
+                body={"target_table": settings.table_name.strip() or "SaluteLavoro"},
+            )
+        except SupabaseTemplateSyncServiceError as error:
+            self._log_info("Template delete RPC unavailable", error=str(error))
+            return
+        self._log_info(
+            "Template delete RPC completed",
+            deleted=self._deleted_count_from_rpc_result(result),
+        )
+
+    @staticmethod
+    def _deleted_count_from_rpc_result(result: object) -> int:
+        if isinstance(result, bool):
+            return 0
+        if isinstance(result, int):
+            return result
+        if isinstance(result, float):
+            return int(result)
+        if isinstance(result, dict):
+            for key in ("deleted", "deleted_count", "qsign_delete_learned_templates"):
+                value = result.get(key)
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, (int, float)):
+                    return int(value)
+        if isinstance(result, list) and result:
+            return SupabaseTemplateSyncService._deleted_count_from_rpc_result(result[0])
+        return 0
 
     def _request(
         self,
@@ -243,6 +342,17 @@ class SupabaseTemplateSyncService:
             )
         return payload
 
+    def _delete_local_templates(self) -> tuple[int, list[Path]]:
+        deleted = 0
+        failed: list[Path] = []
+        for item in self.list_local_templates():
+            try:
+                item.path.unlink()
+                deleted += 1
+            except OSError:
+                failed.append(item.path)
+        return deleted, failed
+
     @staticmethod
     def _parse_remote_updated_at(row: dict[str, Any]) -> datetime:
         raw_value = str(row.get("updated_at") or "")
@@ -266,7 +376,7 @@ class SupabaseTemplateSyncService:
             return (
                 f"Errore Supabase {error.code}: accesso negato dalla "
                 f"Row Level Security sulla tabella '{table_name}'. "
-                "Crea una policy SELECT/INSERT/UPDATE su questa tabella "
+                "Crea una policy SELECT/INSERT/UPDATE/DELETE su questa tabella "
                 "oppure usa una chiave con permessi adeguati."
             )
         return f"Errore Supabase {error.code}: {message or error.reason}"

@@ -5,7 +5,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from app.services.general_preferences_service import SupabaseSettings
+from app.services.erp_document_context import ErpSignedDocumentUploadContext
+from app.services.general_preferences_service import ErpUserSettings, SupabaseSettings
 from app.pdf_viewer_controller import AnchorOverlay, PDFViewerController
 from models.document import Document, Metadata, Page, Rectangle, TextBlock, Word
 from models.pdf_document import PDFDocument
@@ -38,6 +39,7 @@ class FakeViewer:
         self.save_callback = None
         self.cancel_save_callback = None
         self.open_signature_dialog_called = False
+        self.signature_dialog_canvas_size: tuple[float | None, float | None] | None = None
         self.defer_signature_capture_count = 0
         self.defer_viewer_refresh_count = 0
         self.discard_callback = None
@@ -88,8 +90,17 @@ class FakeViewer:
         self.discard_callback = on_confirm
         self.cancel_discard_callback = on_cancel
 
-    def open_signature_dialog(self, on_confirm, on_clear, on_cancel) -> None:
+    def open_signature_dialog(
+        self,
+        on_confirm,
+        on_clear,
+        on_cancel,
+        *,
+        canvas_width=None,
+        canvas_height=None,
+    ) -> None:
         self.open_signature_dialog_called = True
+        self.signature_dialog_canvas_size = (canvas_width, canvas_height)
         on_confirm(
             CapturedSignature(
                 content=b"<svg><polyline points='1,1 2,2'/></svg>",
@@ -1036,6 +1047,20 @@ class PDFViewerControllerTests(unittest.TestCase):
             b"<svg><polyline points='1,1 2,2'/></svg>",
         )
 
+    def test_mouse_signature_dialog_matches_signature_rectangle_aspect(self) -> None:
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.mouse_aspect"),
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(10, 10, 140, 40, 200, 200)
+        self.view.save_callback()
+
+        controller.open_signature_dialog()
+
+        self.assertEqual(self.view.signature_dialog_canvas_size, (420.0, 120.0))
+
     def test_save_signed_pdf_uses_current_signature_rectangle(self) -> None:
         self.service.save_signed_preview.return_value = Path("dist/signed/sample_signed.pdf")
         self.controller.open_document("sample.pdf")
@@ -1065,6 +1090,57 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.service.close_document.assert_called_once()
         self.assertTrue(self.view.cleared)
         self.assertIn("PDF firmato salvato", self.view.statuses[-1])
+
+    def test_save_signed_pdf_uploads_signed_file_to_erp_when_context_is_available(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_path = Path(directory) / "sample_signed.pdf"
+            signed_path.write_bytes(b"%PDF-signed-content")
+            self.service.save_signed_preview.return_value = signed_path
+            dms_client = FakeInfinityDmsClient()
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.erp_upload"),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    erp_settings=ErpUserSettings(
+                        document_service_url="https://erp.example.test/soap",
+                        company_id="SALAV",
+                        basic_username="api-user",
+                        basic_password="api-secret",
+                    )
+                ),
+                infinity_dms_client=dms_client,
+            )
+            controller.open_document(
+                "sample.pdf",
+                ErpSignedDocumentUploadContext(
+                    document_id="DOC-1",
+                    logical_dir="//Dipendenti/Idoneita/",
+                    logical_name="sample_signed.pdf",
+                ),
+            )
+            controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+            controller.apply_mouse_signature(
+                CapturedSignature(
+                    content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                    media_type="image/svg+xml",
+                )
+            )
+
+            controller.save_signed_pdf()
+
+            self.assertEqual(len(dms_client.uploads), 1)
+            upload = dms_client.uploads[0]
+            self.assertEqual(upload["service_url"], "https://erp.example.test/soap")
+            self.assertEqual(upload["credentials"].username, "api-user")
+            self.assertEqual(upload["credentials"].password, "api-secret")
+            self.assertEqual(upload["credentials"].company_id, "SALAV")
+            self.assertEqual(upload["content"], b"%PDF-signed-content")
+            self.assertEqual(upload["logical_dir"], "//Dipendenti/Idoneita/")
+            self.assertEqual(upload["logical_name"], "sample_signed.pdf")
+            self.assertIn("PDF firmato inviato all'ERP", self.view.statuses)
 
     def test_unsigned_save_prompt_blocks_page_change_after_signature(self) -> None:
         self.controller.open_document("sample.pdf")
@@ -1600,15 +1676,29 @@ class FakeGeneralPreferencesService:
         self,
         auto_save_signed_documents: bool = False,
         signature_capture_mode: str = "mouse",
+        erp_settings: ErpUserSettings | None = None,
     ) -> None:
         self._auto_save_signed_documents = auto_save_signed_documents
         self._signature_capture_mode = signature_capture_mode
+        self._erp_settings = erp_settings or ErpUserSettings()
 
     def get_supabase_settings(self) -> SupabaseSettings:
         return SupabaseSettings(
             auto_save_signed_documents=self._auto_save_signed_documents,
             signature_capture_mode=self._signature_capture_mode,
         )
+
+    def get_erp_user_settings(self) -> ErpUserSettings:
+        return self._erp_settings
+
+
+class FakeInfinityDmsClient:
+    def __init__(self) -> None:
+        self.uploads: list[dict[str, object]] = []
+
+    def upload_document(self, **kwargs: object) -> str:
+        self.uploads.append(kwargs)
+        return "OK"
 
 
 class FakePDFProvider:

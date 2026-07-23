@@ -33,6 +33,12 @@ from app.services.infinity_dms_client import (
     InfinityDmsCredentials,
 )
 from services.signature.signature_service import CapturedSignature
+from services.signature.svg_signature import (
+    DEFAULT_SIGNATURE_VIEWBOX_HEIGHT,
+    DEFAULT_SIGNATURE_VIEWBOX_WIDTH,
+    fit_svg_signature_strokes,
+    parse_svg_signature,
+)
 from services.templates.supabase_template_sync_service import (
     SupabaseTemplateSyncService,
     SupabaseTemplateSyncServiceError,
@@ -53,6 +59,20 @@ def _integer_or_default(value: object, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _bounded_float(
+    value: object,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
 
 
 def _safe_erp_document_filename(value: str) -> str:
@@ -156,10 +176,12 @@ class MainView:
         self._window_icon_configured = False
         self._signature_strokes: list[list[tuple[float, float]]] = []
         self._current_signature_stroke: list[tuple[float, float]] | None = None
+        self._signature_pad_width = DEFAULT_SIGNATURE_VIEWBOX_WIDTH
+        self._signature_pad_height = DEFAULT_SIGNATURE_VIEWBOX_HEIGHT
         self._signature_preview = ft.Image(
             src="",
-            width=420,
-            height=180,
+            width=self._signature_pad_width,
+            height=self._signature_pad_height,
             fit=ft.BoxFit.CONTAIN,
         )
         self._signature_paint = ft.Paint(
@@ -171,8 +193,8 @@ class MainView:
         )
         self._signature_canvas = cv.Canvas(
             shapes=[],
-            width=420,
-            height=180,
+            width=self._signature_pad_width,
+            height=self._signature_pad_height,
         )
         self._file_picker = ft.FilePicker()
         self._pfx_file_picker = ft.FilePicker()
@@ -712,6 +734,9 @@ class MainView:
         if self._general_preferences_service is None:
             self._show_local_home_placeholder(update=False)
             return False
+        if not self._erp_document_list_enabled():
+            self._show_local_home_placeholder(update=False)
+            return False
         settings = self._general_preferences_service.get_erp_user_settings()
         self._sync_erp_user_generation_from_settings(settings)
         if not settings.documents_url.strip() or not settings.selected_user_id.strip():
@@ -814,6 +839,9 @@ class MainView:
             self.refresh_erp_documents()
             return
         if self._closing.is_set():
+            return
+        if not self._erp_document_list_enabled():
+            self._show_local_home_placeholder(update=False)
             return
         if not self._erp_download_context_is_current(
             expected_user_id,
@@ -1494,8 +1522,12 @@ class MainView:
         on_confirm: Callable[[CapturedSignature], None],
         on_clear: Callable[[], None] | None = None,
         on_cancel: Callable[[], None] | None = None,
+        *,
+        canvas_width: float | None = None,
+        canvas_height: float | None = None,
     ) -> None:
         ft = self._ft
+        self._set_signature_pad_size(canvas_width, canvas_height)
         self._signature_strokes = []
         self._current_signature_stroke = None
         self._signature_preview.src = self._signature_svg_data_uri()
@@ -1526,8 +1558,8 @@ class MainView:
         signature_pad = ft.GestureDetector(
             content=ft.Container(
                 content=self._signature_canvas,
-                width=420,
-                height=180,
+                width=self._signature_pad_width,
+                height=self._signature_pad_height,
                 bgcolor=ft.Colors.WHITE,
                 border=ft.Border(
                     left=ft.BorderSide(1, ft.Colors.GREY_500),
@@ -1554,6 +1586,28 @@ class MainView:
         )
         self._active_dialog = dialog
         self._page.show_dialog(dialog)
+
+    def _set_signature_pad_size(
+        self,
+        width: float | None,
+        height: float | None,
+    ) -> None:
+        self._signature_pad_width = _bounded_float(
+            width,
+            default=DEFAULT_SIGNATURE_VIEWBOX_WIDTH,
+            minimum=240.0,
+            maximum=520.0,
+        )
+        self._signature_pad_height = _bounded_float(
+            height,
+            default=DEFAULT_SIGNATURE_VIEWBOX_HEIGHT,
+            minimum=90.0,
+            maximum=240.0,
+        )
+        self._signature_preview.width = self._signature_pad_width
+        self._signature_preview.height = self._signature_pad_height
+        self._signature_canvas.width = self._signature_pad_width
+        self._signature_canvas.height = self._signature_pad_height
 
     def show_information(self) -> None:
         ft = self._ft
@@ -1757,6 +1811,21 @@ class MainView:
         search.on_change = render_table
         render_table()
 
+        actions = [
+            *(
+                [
+                    ft.TextButton(
+                        "Elimina",
+                        disabled=not bool(documents),
+                        on_click=lambda _: self._confirm_delete_signed_history(),
+                    )
+                ]
+                if self._admin_mode
+                else []
+            ),
+            ft.TextButton("Chiudi", on_click=lambda _: self._close_dialog()),
+        ]
+
         dialog = ft.AlertDialog(
             title=ft.Text("Storico documenti firmati"),
             content=ft.Container(
@@ -1771,7 +1840,44 @@ class MainView:
                     spacing=10,
                 ),
             ),
-            actions=[ft.TextButton("Chiudi", on_click=lambda _: self._close_dialog())],
+            actions=actions,
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
+    def _confirm_delete_signed_history(self) -> None:
+        if not self._admin_mode:
+            self.show_error("Operazione riservata all'amministratore")
+            return
+        ft = self._ft
+        documents = self._signed_history_documents()
+        self._close_dialog()
+
+        def cancel(_: object) -> None:
+            self._close_dialog()
+            self.show_signed_history()
+
+        def delete(_: object) -> None:
+            deleted, failed = self._delete_files(documents)
+            self._close_dialog()
+            self.show_signed_history()
+            if failed:
+                self.show_status(
+                    f"eliminati {deleted} documenti dallo storico, "
+                    f"non eliminati {len(failed)}"
+                )
+            else:
+                self.show_status(f"eliminati {deleted} documenti dallo storico")
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Elimina storico"),
+            content=ft.Text(
+                "Eliminare tutti i documenti firmati presenti nello storico?"
+            ),
+            actions=[
+                ft.TextButton("Annulla", on_click=cancel),
+                ft.FilledButton("Elimina", on_click=delete),
+            ],
         )
         self._active_dialog = dialog
         self._page.show_dialog(dialog)
@@ -2535,6 +2641,25 @@ class MainView:
         search.on_change = render_table
         render_table()
 
+        template_buttons = [
+            *(
+                [
+                    ft.OutlinedButton(
+                        "Elimina",
+                        disabled=not bool(templates)
+                        and self._template_sync_service is None,
+                        on_click=lambda _: self._confirm_delete_learned_templates(),
+                    )
+                ]
+                if self._admin_mode
+                else []
+            ),
+            ft.OutlinedButton("Aggiorna", on_click=refresh),
+            ft.OutlinedButton("Scarica", on_click=lambda _: sync_action("download")),
+            ft.OutlinedButton("Carica", on_click=lambda _: sync_action("upload")),
+            ft.FilledButton("Sincronizza", on_click=lambda _: sync_action("sync")),
+        ]
+
         dialog = ft.AlertDialog(
             title=ft.Text("Template Documenti"),
             content=ft.Container(
@@ -2545,19 +2670,7 @@ class MainView:
                         search,
                         table_container,
                         ft.Row(
-                            controls=[
-                                ft.OutlinedButton("Aggiorna", on_click=refresh),
-                                ft.OutlinedButton(
-                                    "Scarica", on_click=lambda _: sync_action("download")
-                                ),
-                                ft.OutlinedButton(
-                                    "Carica", on_click=lambda _: sync_action("upload")
-                                ),
-                                ft.FilledButton(
-                                    "Sincronizza",
-                                    on_click=lambda _: sync_action("sync"),
-                                ),
-                            ],
+                            controls=template_buttons,
                             wrap=True,
                         ),
                         result_text,
@@ -2567,6 +2680,78 @@ class MainView:
                 ),
             ),
             actions=[ft.TextButton("Chiudi", on_click=lambda _: self._close_dialog())],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
+    def _confirm_delete_learned_templates(self) -> None:
+        if not self._admin_mode:
+            self.show_error("Operazione riservata all'amministratore")
+            return
+        ft = self._ft
+        templates = self._local_learned_templates()
+        self._close_dialog()
+
+        def cancel(_: object) -> None:
+            self._close_dialog()
+            self.show_template_history()
+
+        def delete(_: object) -> None:
+            message = ""
+            if self._template_sync_service is not None:
+                try:
+                    result = self._template_sync_service.delete_templates()
+                    deleted = int(getattr(result, "deleted", 0))
+                    remote_deleted = int(getattr(result, "remote_deleted", 0))
+                    remote_remaining = int(getattr(result, "remote_remaining", 0))
+                    message = f"Eliminati {deleted} template"
+                    if remote_remaining:
+                        message = (
+                            f"Eliminati {deleted} template locali; "
+                            f"Supabase non ha rimosso {remote_remaining} righe"
+                        )
+                    elif remote_deleted:
+                        if deleted:
+                            message = (
+                                f"Eliminati {deleted} template "
+                                f"(Supabase: {remote_deleted})"
+                            )
+                        else:
+                            message = (
+                                f"Eliminati {remote_deleted} template da Supabase"
+                            )
+                except SupabaseTemplateSyncServiceError as error:
+                    deleted, failed = self._delete_files(templates)
+                    message = (
+                        f"Eliminati {deleted} template locali; "
+                        f"Supabase non aggiornata: {error}"
+                    )
+                    if failed:
+                        message = (
+                            f"Eliminati {deleted} template locali, "
+                            f"non eliminati {len(failed)}; "
+                            f"Supabase non aggiornata: {error}"
+                        )
+            else:
+                deleted, failed = self._delete_files(templates)
+                if failed:
+                    message = (
+                        f"Eliminati {deleted} template, non eliminati {len(failed)}"
+                    )
+                else:
+                    message = f"Eliminati {deleted} template"
+            self._close_dialog()
+            self.show_template_history(message)
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Elimina template"),
+            content=ft.Text(
+                "Eliminare tutti i template documento salvati in memoria?"
+            ),
+            actions=[
+                ft.TextButton("Annulla", on_click=cancel),
+                ft.FilledButton("Elimina", on_click=delete),
+            ],
         )
         self._active_dialog = dialog
         self._page.show_dialog(dialog)
@@ -3029,6 +3214,19 @@ class MainView:
             reverse=True,
         )
 
+    @staticmethod
+    def _delete_files(paths: list[Path]) -> tuple[int, list[Path]]:
+        deleted = 0
+        failed: list[Path] = []
+        for path in paths:
+            try:
+                if path.is_file():
+                    path.unlink()
+                    deleted += 1
+            except OSError:
+                failed.append(path)
+        return deleted, failed
+
     def _open_signed_file(self, path: Path) -> None:
         if hasattr(self._page, "run_task"):
             self._page.run_task(self._launch_signed_file, path)
@@ -3259,23 +3457,26 @@ class MainView:
     def _signature_canvas_for_overlay(
         self, content: bytes, overlay: AnchorOverlayViewModel
     ) -> object | None:
-        strokes = self._signature_strokes_from_svg(content)
+        geometry = parse_svg_signature(content)
+        strokes, scale = fit_svg_signature_strokes(
+            geometry,
+            target_width=float(overlay.width),
+            target_height=float(overlay.height),
+        )
         if not strokes:
             return None
-        scale_x = overlay.width / 420
-        scale_y = overlay.height / 180
         paint = self._signature_paint.copy(
-            stroke_width=max(1.5, min(scale_x, scale_y) * 3)
+            stroke_width=max(1.5, scale * 3)
         )
         shapes = []
         for stroke in strokes:
             for start, end in zip(stroke, stroke[1:]):
                 shapes.append(
                     self._cv.Line(
-                        start[0] * scale_x,
-                        start[1] * scale_y,
-                        end[0] * scale_x,
-                        end[1] * scale_y,
+                        start[0],
+                        start[1],
+                        end[0],
+                        end[1],
                         paint=paint,
                     )
                 )
@@ -3287,21 +3488,7 @@ class MainView:
 
     @staticmethod
     def _signature_strokes_from_svg(content: bytes) -> list[list[tuple[float, float]]]:
-        svg = content.decode("utf-8", errors="ignore")
-        strokes: list[list[tuple[float, float]]] = []
-        for match in re.finditer(r"<polyline\b[^>]*\bpoints='([^']+)'", svg):
-            points: list[tuple[float, float]] = []
-            for point in match.group(1).split():
-                x_value, separator, y_value = point.partition(",")
-                if not separator:
-                    continue
-                try:
-                    points.append((float(x_value), float(y_value)))
-                except ValueError:
-                    continue
-            if len(points) > 1:
-                strokes.append(points)
-        return strokes
+        return [list(stroke) for stroke in parse_svg_signature(content).strokes]
 
     def _handle_pdf_mouse_wheel(self, event: object) -> None:
         if not self._document_viewer.visible or not self._pdf_stack.visible:
@@ -3502,7 +3689,10 @@ class MainView:
         paths = "\n".join(self._svg_polyline(stroke) for stroke in strokes if len(stroke) > 1)
         return (
             "<svg xmlns='http://www.w3.org/2000/svg' "
-            "width='420' height='180' viewBox='0 0 420 180'>"
+            f"width='{self._signature_pad_width:.0f}' "
+            f"height='{self._signature_pad_height:.0f}' "
+            f"viewBox='0 0 {self._signature_pad_width:.0f} "
+            f"{self._signature_pad_height:.0f}'>"
             f"{paths}</svg>"
         )
 

@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from app.services.erp_document_context import ErpSignedDocumentUploadContext
 from app.services.general_preferences_service import GeneralPreferencesService
+from app.services.infinity_dms_client import InfinityDmsCredentials, InfinityDmsClient
 from models.document import Document, Rectangle
 from models.template import AnchorRule, PlacementRule, RecognitionRule, Template
 from services.logging.logging_service import LoggingService
@@ -98,6 +100,9 @@ class PDFViewerView(Protocol):
         on_confirm: "SignatureConfirmCallback",
         on_clear: "SignatureEventCallback",
         on_cancel: "SignatureEventCallback",
+        *,
+        canvas_width: float | None = None,
+        canvas_height: float | None = None,
     ) -> None: ...
 
     def clear_document(self) -> None: ...
@@ -193,6 +198,7 @@ class PDFViewerController:
         anchor_detector: AnchorDetector | None = None,
         template_repository: TemplateRepository | None = None,
         general_preferences_service: GeneralPreferencesService | None = None,
+        infinity_dms_client: InfinityDmsClient | None = None,
         signature_provider: WacomProvider | None = None,
         template_root: str | Path = "templates",
     ) -> None:
@@ -203,6 +209,7 @@ class PDFViewerController:
         self._anchor_detector = anchor_detector
         self._template_repository = template_repository
         self._general_preferences_service = general_preferences_service
+        self._infinity_dms_client = infinity_dms_client
         self._signature_provider = signature_provider
         self._template_root = Path(template_root)
         self._canonical_document: Document | None = None
@@ -216,20 +223,32 @@ class PDFViewerController:
         self._add_signature_box_mode = False
         self._recognized_template: Template | None = None
         self._pending_manual_rectangle_restore: SignatureRectangleSnapshot | None = None
+        self._erp_upload_context: ErpSignedDocumentUploadContext | None = None
         self._workflow_status = "Apri un PDF"
         self._has_unsaved_signature = False
         self._wacom_capture_cancel: threading.Event | None = None
         self._wacom_capture_generation = 0
         self.state = PDFViewerState()
 
-    def open_document(self, path: str) -> None:
-        if self._confirm_unsaved_signature(lambda: self._open_document_now(path)):
+    def open_document(
+        self,
+        path: str,
+        erp_upload_context: ErpSignedDocumentUploadContext | None = None,
+    ) -> None:
+        if self._confirm_unsaved_signature(
+            lambda: self._open_document_now(path, erp_upload_context)
+        ):
             return
-        self._open_document_now(path)
+        self._open_document_now(path, erp_upload_context)
 
-    def _open_document_now(self, path: str) -> None:
+    def _open_document_now(
+        self,
+        path: str,
+        erp_upload_context: ErpSignedDocumentUploadContext | None = None,
+    ) -> None:
         try:
             self._has_unsaved_signature = False
+            self._erp_upload_context = erp_upload_context
             document = self._pdf_service.open_document(Path(path))
             self.state = PDFViewerState(page_count=document.page_count)
             self._analyze_document(Path(path))
@@ -250,6 +269,7 @@ class PDFViewerController:
             self._add_signature_box_mode = False
             self._recognized_template = None
             self._pending_manual_rectangle_restore = None
+            self._erp_upload_context = None
             self._has_unsaved_signature = False
             self._workflow_status = "Documento non aperto"
             self._view.clear_document()
@@ -278,6 +298,7 @@ class PDFViewerController:
             self._add_signature_box_mode = False
             self._recognized_template = None
             self._pending_manual_rectangle_restore = None
+            self._erp_upload_context = None
             self._has_unsaved_signature = False
             self._workflow_status = "Apri un PDF"
             self._view.set_manual_signature_mode(False)
@@ -300,6 +321,7 @@ class PDFViewerController:
         self._add_signature_box_mode = False
         self._recognized_template = None
         self._pending_manual_rectangle_restore = None
+        self._erp_upload_context = None
         self._has_unsaved_signature = False
         self._workflow_status = "Apri un PDF"
 
@@ -709,10 +731,13 @@ class PDFViewerController:
             self._capture_wacom_signature()
             return
         self._logger.info("Opening mouse signature dialog")
+        canvas_width, canvas_height = self._mouse_signature_canvas_size()
         self._view.open_signature_dialog(
             self.apply_mouse_signature,
             self.log_mouse_signature_clear,
             self.log_mouse_signature_cancel,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
         )
 
     def _open_wacom_signature_when_ready(self) -> None:
@@ -787,6 +812,14 @@ class PDFViewerController:
 
     def log_mouse_signature_cancel(self) -> None:
         self._logger.info("Mouse signature cancelled")
+
+    def _mouse_signature_canvas_size(self) -> tuple[float, float]:
+        rectangle = self._signature_rectangle
+        width = 420.0
+        if rectangle is None or rectangle.width <= 0 or rectangle.height <= 0:
+            return width, 180.0
+        height = width / (rectangle.width / rectangle.height)
+        return width, max(90.0, min(220.0, height))
 
     def apply_mouse_signature(self, signature: CapturedSignature) -> None:
         target = self._selected_signature_target()
@@ -877,6 +910,7 @@ class PDFViewerController:
             self._view.show_error(str(error))
             return
 
+        erp_upload_context = self._erp_upload_context
         self._workflow_status = f"PDF firmato salvato: {destination}"
         self._has_unsaved_signature = False
         self._logger.info("Signed PDF saved", destination=str(destination))
@@ -894,9 +928,91 @@ class PDFViewerController:
         self._add_signature_box_mode = False
         self._recognized_template = None
         self._pending_manual_rectangle_restore = None
+        self._erp_upload_context = None
         self._view.set_manual_signature_mode(False)
         self._view.clear_document()
         self._view.show_status(f"PDF firmato salvato: {destination}")
+        self._queue_signed_pdf_erp_upload(Path(destination), erp_upload_context)
+
+    def _queue_signed_pdf_erp_upload(
+        self,
+        destination: Path,
+        context: ErpSignedDocumentUploadContext | None,
+    ) -> None:
+        if context is None:
+            return
+        if self._general_preferences_service is None or self._infinity_dms_client is None:
+            self._logger.warning(
+                "ERP signed document upload skipped",
+                document_id=context.document_id,
+                reason="services_not_configured",
+            )
+            return
+        if not context.logical_dir.strip() or not context.logical_name.strip():
+            self._logger.warning(
+                "ERP signed document upload skipped",
+                document_id=context.document_id,
+                logical_dir_configured=bool(context.logical_dir.strip()),
+                logical_name_configured=bool(context.logical_name.strip()),
+            )
+            return
+
+        def upload() -> None:
+            self._upload_signed_pdf_to_erp(destination, context)
+
+        self._view.run_background_task(upload)
+
+    def _upload_signed_pdf_to_erp(
+        self,
+        destination: Path,
+        context: ErpSignedDocumentUploadContext,
+    ) -> None:
+        try:
+            settings = self._general_preferences_service.get_erp_user_settings()
+            service_url = settings.document_service_url.strip()
+            username = settings.basic_username.strip()
+            password = settings.basic_password
+            company = settings.company_id.strip() or "SALAV"
+            if not service_url:
+                raise RuntimeError("servizio documentale ERP non configurato")
+            if not username or not password:
+                raise RuntimeError("credenziali documentali ERP non configurate")
+            self._logger.info(
+                "ERP signed document upload started",
+                document_id=context.document_id,
+                logical_dir_configured=bool(context.logical_dir.strip()),
+                logical_name_configured=bool(context.logical_name.strip()),
+            )
+            result = self._infinity_dms_client.upload_document(
+                service_url=service_url,
+                credentials=InfinityDmsCredentials(
+                    username=username,
+                    password=password,
+                    company_id=company,
+                ),
+                content=destination.read_bytes(),
+                logical_dir=context.logical_dir,
+                logical_name=context.logical_name,
+            )
+        except Exception as error:
+            self._logger.exception(
+                "ERP signed document upload failed",
+                document_id=context.document_id,
+            )
+            self._view.run_ui_task(
+                lambda: self._view.show_error(
+                    f"invio documento firmato all'ERP fallito: {error}"
+                )
+            )
+            return
+        self._logger.info(
+            "ERP signed document uploaded",
+            document_id=context.document_id,
+            result_present=bool(str(result).strip()),
+        )
+        self._view.run_ui_task(
+            lambda: self._view.show_status("PDF firmato inviato all'ERP")
+        )
 
     def _auto_save_signed_documents_enabled(self) -> bool:
         if self._general_preferences_service is None:

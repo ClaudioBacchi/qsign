@@ -7,6 +7,7 @@ from app.pdf_viewer_controller import PDFViewerController
 from app.services.certificate_service import CertificateService
 from app.services.general_preferences_service import GeneralPreferencesService
 from app.services.infinity_dms_client import InfinityDmsClient
+from app.services.local_erp_listener import LocalErpListener
 from services.anchors.anchor_detector import AnchorDetector
 from services.logging.logging_service import LoggingService
 from services.pdf.pdf_service import PDFService
@@ -61,6 +62,33 @@ class QSignApplication:
             logger=self._logger,
         )
         self._logger.info("QSign services initialized")
+        local_erp_listener: LocalErpListener | None = None
+
+        def start_or_restart_local_erp_listener() -> None:
+            nonlocal local_erp_listener
+            settings = general_preferences_service.get_supabase_settings()
+            port = settings.local_erp_port
+            if (
+                local_erp_listener is not None
+                and local_erp_listener.address[1] == port
+            ):
+                return
+            if local_erp_listener is not None:
+                local_erp_listener.stop()
+            local_erp_listener = LocalErpListener(
+                view=view,
+                open_document=controller.open_document,
+                preferences_service=general_preferences_service,
+                dms_client=infinity_dms_client,
+                logger=self._logger,
+                port=port,
+            )
+            local_erp_listener.start()
+
+        def stop_local_erp_listener() -> None:
+            if local_erp_listener is not None:
+                local_erp_listener.stop()
+
         digital_signature_writer = PyHankoDigitalSignatureWriter(
             certificate_service=certificate_service,
             logger=self._logger,
@@ -83,6 +111,7 @@ class QSignApplication:
             general_preferences_service=general_preferences_service,
             template_sync_service=template_sync_service,
             infinity_dms_client=infinity_dms_client,
+            on_general_preferences_saved=lambda _: start_or_restart_local_erp_listener(),
         )
         controller = PDFViewerController(
             pdf_service=pdf_service,
@@ -92,6 +121,7 @@ class QSignApplication:
             anchor_detector=anchor_detector,
             template_repository=template_repository,
             general_preferences_service=general_preferences_service,
+            infinity_dms_client=infinity_dms_client,
             signature_provider=self._create_signature_provider(),
         )
         view.bind_actions(
@@ -116,9 +146,10 @@ class QSignApplication:
         view.build()
         view.maximize_window()
         view.start_erp_auto_refresh()
+        start_or_restart_local_erp_listener()
         view.show_startup_user_confirmation()
         self._logger.info("QSign desktop shell ready")
-        self._bind_shutdown(page, controller, view)
+        self._bind_shutdown(page, controller, view, stop_local_erp_listener)
 
     def _create_signature_provider(self) -> STU430Provider | None:
         try:
@@ -132,9 +163,12 @@ class QSignApplication:
         page: "ft.Page",
         controller: PDFViewerController,
         view: object | None = None,
+        stop_local_erp_listener: Callable[[], None] | None = None,
     ) -> None:
         def shutdown(_: object | None = None) -> None:
             self._logger.info("QSign shutdown requested")
+            if stop_local_erp_listener is not None:
+                stop_local_erp_listener()
             stop_background_tasks = getattr(view, "stop_background_tasks", None)
             if callable(stop_background_tasks):
                 stop_background_tasks()

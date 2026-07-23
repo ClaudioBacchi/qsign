@@ -93,6 +93,48 @@ class InfinityDmsClientTests(unittest.TestCase):
 
         self.assertEqual(content, _valid_pdf_bytes())
 
+    def test_upload_document_connects_copies_file_and_disconnects(self) -> None:
+        transport = FakeSoapTransport(
+            [
+                _soap_response("connectResponse", "connectReturn", "CTX-1"),
+                _soap_response("copyFileResponse", "copyFileReturn", "OK"),
+                _soap_response("disconnectResponse", "disconnectReturn", "OK"),
+            ]
+        )
+        client = InfinityDmsClient(opener=transport)
+
+        result = client.upload_document(
+            service_url="https://erp.example.test/InfinityDmsInterface",
+            credentials=InfinityDmsCredentials("api-user", "secret", "SALAV"),
+            content=_valid_pdf_bytes(),
+            logical_dir="//Dipendenti/Idoneita/",
+            logical_name="signed.pdf",
+        )
+
+        self.assertEqual(result, "OK")
+        self.assertEqual(len(transport.requests), 3)
+        copy_file = _body_operation(transport.requests[1].data)
+        self.assertEqual(_local_name(copy_file.tag), "copyFile")
+        self.assertEqual(_child_text(copy_file, "sContextId"), "CTX-1")
+        self.assertEqual(_child_text(copy_file, "sLogicalDir"), "//Dipendenti/Idoneita/")
+        self.assertEqual(_child_text(copy_file, "sLogicalName"), "signed.pdf")
+        self.assertEqual(_child_text(copy_file, "sFlags"), "0")
+        self.assertEqual(_child_text(copy_file, "iAgain"), "0")
+        self.assertEqual(
+            base64.b64decode(_child_text(copy_file, "bFile").encode("ascii")),
+            _valid_pdf_bytes(),
+        )
+
+    def test_upload_rejects_missing_logical_directory(self) -> None:
+        with self.assertRaisesRegex(InfinityDmsClientError, "Directory logica"):
+            InfinityDmsClient(opener=FakeSoapTransport([])).upload_document(
+                service_url="https://erp.example.test/service",
+                credentials=InfinityDmsCredentials("user", "pwd", "SALAV"),
+                content=_valid_pdf_bytes(),
+                logical_dir="",
+                logical_name="signed.pdf",
+            )
+
     def test_disconnect_is_attempted_when_get_document_fails(self) -> None:
         transport = FakeSoapTransport(
             [

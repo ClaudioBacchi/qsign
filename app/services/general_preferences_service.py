@@ -94,6 +94,20 @@ class ErpDocumentsResult:
     documents: tuple[ErpDocument, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class ErpDocumentStorageInfo:
+    document_id: str
+    name: str = ""
+    logical_path: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ErpDocumentStorageInfoResult:
+    success: bool
+    message: str
+    info: ErpDocumentStorageInfo | None = None
+
+
 class GeneralPreferencesService:
     """Read and write encrypted general preferences."""
 
@@ -451,6 +465,99 @@ class GeneralPreferencesService:
                 else f"Caricati {len(documents)} documenti"
             ),
             tuple(documents),
+        )
+
+    def fetch_erp_document_storage_info(
+        self,
+        document_id: str,
+        settings: ErpUserSettings | None = None,
+    ) -> ErpDocumentStorageInfoResult:
+        effective_settings = settings or self.get_erp_user_settings()
+        documents_url = effective_settings.documents_url.strip()
+        username = effective_settings.basic_username.strip()
+        password = effective_settings.basic_password.strip()
+        normalized_document_id = document_id.strip()
+        if not documents_url or not normalized_document_id:
+            return ErpDocumentStorageInfoResult(
+                False,
+                "Configurazione metadati documento ERP incompleta",
+            )
+        if not documents_url.startswith("https://"):
+            return ErpDocumentStorageInfoResult(
+                False,
+                "URL query documenti ERP non valido",
+            )
+        if not username:
+            return ErpDocumentStorageInfoResult(
+                False,
+                "Utente Basic Auth obbligatorio",
+            )
+        if not password:
+            return ErpDocumentStorageInfoResult(
+                False,
+                "Password Basic Auth obbligatoria",
+            )
+
+        request = urllib.request.Request(
+            _url_with_query_parameter(
+                documents_url,
+                "pVFCODICEID",
+                normalized_document_id,
+            ),
+            headers={
+                "Accept": "application/json",
+                "Authorization": self._basic_auth_header(username, password),
+            },
+            method="GET",
+        )
+        try:
+            response = self._opener(request, timeout=8)
+            status = int(getattr(response, "status", 200))
+            body = _read_response_body(response)
+        except urllib.error.HTTPError as error:
+            if error.code in {401, 403}:
+                return ErpDocumentStorageInfoResult(
+                    False,
+                    "Connessione ERP fallita: credenziali non autorizzate",
+                )
+            return ErpDocumentStorageInfoResult(
+                False,
+                f"Risposta ERP non valida: {error.code}",
+            )
+        except Exception:
+            return ErpDocumentStorageInfoResult(
+                False,
+                "Connessione ERP metadati documento fallita",
+            )
+
+        if not 200 <= status < 300:
+            return ErpDocumentStorageInfoResult(
+                False,
+                f"Risposta ERP non valida: {status}",
+            )
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return ErpDocumentStorageInfoResult(
+                False,
+                "Risposta ERP non in formato JSON",
+            )
+        rows = _erp_document_rows(payload)
+        if rows is None:
+            return ErpDocumentStorageInfoResult(
+                False,
+                "Risposta ERP documenti non valida",
+            )
+        info = _erp_document_storage_info_from_rows(rows, normalized_document_id)
+        if info is None:
+            return ErpDocumentStorageInfoResult(
+                True,
+                "Metadati documento ERP non trovati",
+            )
+        return ErpDocumentStorageInfoResult(
+            True,
+            "Metadati documento ERP caricati",
+            info,
         )
 
     def test_supabase_connection(
@@ -1071,6 +1178,43 @@ def _parse_erp_documents(payload: object, selected_user_id: str) -> list[ErpDocu
         if document is not None:
             documents.append(document)
     return documents
+
+
+def _erp_document_storage_info_from_rows(
+    rows: list[object],
+    document_id: str,
+) -> ErpDocumentStorageInfo | None:
+    first_row: dict[str, Any] | None = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if first_row is None:
+            first_row = row
+        row_document_id = _case_insensitive_row_text(row, "vfcodiceid")
+        if row_document_id == document_id:
+            return _erp_document_storage_info_from_row(row, document_id)
+    if first_row is not None and len(rows) == 1:
+        return _erp_document_storage_info_from_row(first_row, document_id)
+    return None
+
+
+def _erp_document_storage_info_from_row(
+    row: dict[str, Any],
+    document_id: str,
+) -> ErpDocumentStorageInfo:
+    return ErpDocumentStorageInfo(
+        document_id=document_id,
+        name=_case_insensitive_row_text(row, "vfname"),
+        logical_path=_case_insensitive_row_text(row, "vfpath"),
+    )
+
+
+def _case_insensitive_row_text(row: dict[str, Any], name: str) -> str:
+    normalized_name = name.casefold()
+    for key, value in row.items():
+        if str(key).casefold() == normalized_name:
+            return str(value or "").strip()
+    return ""
 
 
 def _erp_document_from_row(

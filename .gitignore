@@ -10,6 +10,7 @@ dist/
 release/
 logs/
 config/preferences.json
+config/preferences.json.bak
 *.pyc
 *.py[cod]
 *.egg-info/

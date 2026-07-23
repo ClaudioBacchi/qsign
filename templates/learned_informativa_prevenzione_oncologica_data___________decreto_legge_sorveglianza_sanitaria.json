@@ -1,131 +1,131 @@
 {
+  "schema_version": "1.0",
+  "template_id": "learned_informativa_prevenzione_oncologica_data___________decreto_legge_sorveglianza_sanitaria",
   "code": "LEARNED_INFORMATIVA_PREVENZIONE_ONCOLOGICA_DATA___________DECRETO_LEGGE_SORVEGLIANZA_SANITARIA",
   "name": "Template provvisorio learned_informativa_prevenzione_oncologica_data___________decreto_legge_sorveglianza_sanitaria",
-  "state": "draft",
-  "version": "0.1.0",
-  "priority": 5,
-  "settings": {
-    "ambiguity_margin": 5,
-    "normalization_profile": "default",
-    "recognition_threshold": 80
-  },
   "description": "Template creato dal primo flusso manuale QSign.",
-  "template_id": "learned_informativa_prevenzione_oncologica_data___________decreto_legge_sorveglianza_sanitaria",
-  "anchor_rules": [],
   "document_type": "manual_signature_flow",
+  "version": "0.1.0",
+  "state": "draft",
+  "priority": 5,
   "document_rules": [],
-  "schema_version": "1.0",
-  "placement_rules": [
-    {
-      "role": "signer",
-      "side": "manual",
-      "width": 204.0,
-      "height": 65.0,
-      "required": true,
-      "x_offset": 139.5,
-      "y_offset": 756.0,
-      "alignment": "manual",
-      "anchor_id": "manual",
-      "page_index": 0,
-      "placement_id": "manual-signature"
-    }
-  ],
   "recognition_rules": [
     {
-      "scope": "document",
-      "weight": 0.25,
       "rule_id": "manual-filename-stem",
-      "required": false,
       "rule_type": "literal",
-      "expression": "851013_beuk8pvxri"
+      "expression": "2178db3e7bdf4b6abf317a5bfd9ab7b0_infsceening_000000000052050_GHINASSI_ENNIO_MASSIMO_7_",
+      "scope": "document",
+      "required": false,
+      "weight": 0.25
     },
     {
-      "scope": "document",
-      "weight": 6.0,
       "rule_id": "manual-recognition-phrase",
-      "required": false,
       "rule_type": "literal",
-      "expression": "Salute e Lavoro Società Coopera va Ambulatori Via Meucci, 18 - 47122 Forlì (FC) Tel. 0543 798337 Via G. Per cari, 2/A - 47035"
+      "expression": "Salute e Lavoro Società Coopera va Ambulatori Via Meucci, 18 - 47122 Forlì (FC) Tel. 0543 798337 Via G. Per cari, 2/A - 47035",
+      "scope": "document",
+      "required": false,
+      "weight": 6.0
     },
     {
-      "scope": "document",
-      "weight": 10.0,
       "rule_id": "manual-structural-signature",
-      "required": true,
       "rule_type": "literal",
-      "expression": "informativa prevenzione oncologica data__________ decreto legge sorveglianza sanitaria comma riveste ruolo fondamentale tutela nostra recen aggiornamen"
+      "expression": "informativa prevenzione oncologica data__________ decreto legge sorveglianza sanitaria comma riveste ruolo fondamentale tutela nostra recen aggiornamen",
+      "scope": "document",
+      "required": true,
+      "weight": 10.0
     },
     {
-      "scope": "document",
-      "weight": 30.0,
       "rule_id": "manual-visual-signature",
-      "required": true,
       "rule_type": "visual_hash",
-      "expression": "000000003f8400403f80fe003801ff4c3ff40040013ffb801ffa00001ffffff81ffffff81ffffc001ffffff81ffffff81ffffff81fe100001ffdfff81ffffff81ffbfff81ffffff80f0000001ffffff81fffc0001ffe00001ff000001ffffff81ffffff81ffffff81fffffc01ffe00000c0003e0001c0b700000000000000000"
+      "expression": "000000003f8400403f80fe003801ff4c3ff40040013ffb801ffe00001ffffff81ffffff81ffffc001ffffff81ffffff81ffffff81fe100001ffdfff81ffffff81ffbfff81ffffff80f0000001ffffff81fffc0001ffe00001ff000001ffffff81ffffff81ffffff81fffffc01ffe00000c0007f000000b700000000000000000",
+      "scope": "document",
+      "required": true,
+      "weight": 30.0
     },
     {
-      "scope": "document",
-      "weight": 1.25,
       "rule_id": "manual-keyword-1",
-      "required": false,
       "rule_type": "literal",
-      "expression": "informativa"
+      "expression": "informativa",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
     },
     {
-      "scope": "document",
-      "weight": 1.25,
       "rule_id": "manual-keyword-2",
-      "required": false,
       "rule_type": "literal",
-      "expression": "prevenzione"
+      "expression": "prevenzione",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
     },
     {
-      "scope": "document",
-      "weight": 1.25,
       "rule_id": "manual-keyword-3",
-      "required": false,
       "rule_type": "literal",
-      "expression": "oncologica"
+      "expression": "oncologica",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
     },
     {
-      "scope": "document",
-      "weight": 1.25,
       "rule_id": "manual-keyword-4",
-      "required": false,
       "rule_type": "literal",
-      "expression": "data__________"
+      "expression": "data__________",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
     },
     {
-      "scope": "document",
-      "weight": 1.25,
       "rule_id": "manual-keyword-5",
-      "required": false,
       "rule_type": "literal",
-      "expression": "decreto"
+      "expression": "decreto",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
     },
     {
-      "scope": "document",
-      "weight": 1.25,
       "rule_id": "manual-keyword-6",
-      "required": false,
       "rule_type": "literal",
-      "expression": "legge"
+      "expression": "legge",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
     },
     {
-      "scope": "document",
-      "weight": 1.25,
       "rule_id": "manual-keyword-7",
-      "required": false,
       "rule_type": "literal",
-      "expression": "sorveglianza"
+      "expression": "sorveglianza",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
     },
     {
-      "scope": "document",
-      "weight": 1.25,
       "rule_id": "manual-keyword-8",
-      "required": false,
       "rule_type": "literal",
-      "expression": "sanitaria"
+      "expression": "sanitaria",
+      "scope": "document",
+      "required": false,
+      "weight": 1.25
     }
-  ]
+  ],
+  "anchor_rules": [],
+  "placement_rules": [
+    {
+      "placement_id": "manual-signature",
+      "role": "signer",
+      "anchor_id": "manual",
+      "side": "manual",
+      "alignment": "manual",
+      "x_offset": 136.5,
+      "y_offset": 757.0,
+      "width": 206.0,
+      "height": 65.0,
+      "page_index": 0,
+      "required": true
+    }
+  ],
+  "settings": {
+    "recognition_threshold": 80,
+    "ambiguity_margin": 5,
+    "normalization_profile": "default"
+  }
 }

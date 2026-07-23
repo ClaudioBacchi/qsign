@@ -134,6 +134,28 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(service.erp_document_fetch_count, 0)
         self.assertIs(view._home_view.content, view._viewer_placeholder)
 
+    def test_erp_documents_are_not_loaded_when_document_list_is_disabled(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.settings = SupabaseSettings(list_erp_documents=False)
+        service.erp_settings = ErpUserSettings(
+            documents_url="https://erp.example.test/documents",
+            selected_user_id="20",
+        )
+        service.erp_documents_result = ErpDocumentsResult(
+            True,
+            "Caricati 1 documenti",
+            (ErpDocument("NOME_DOCUMENTO.pdf", "2026-07-16 09:29:57"),),
+        )
+        view = MainView(page, general_preferences_service=service)
+
+        shown = view.refresh_erp_documents()
+
+        self.assertFalse(shown)
+        self.assertEqual(service.erp_document_fetch_count, 0)
+        self.assertIs(view._home_view.content, view._viewer_placeholder)
+        self.assertTrue(view._viewer_placeholder.visible)
+
     def test_erp_documents_grid_shows_safe_columns_only(self) -> None:
         page = FakePage()
         service = FakeGeneralPreferencesService()
@@ -725,6 +747,8 @@ class MainViewTests(unittest.TestCase):
             on_zoom_in=lambda: None,
             on_zoom_out=lambda: None,
         )
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
 
         view.refresh_erp_documents()
         table = view._home_view.content.content.controls[1].content.controls[0]
@@ -1132,6 +1156,60 @@ class MainViewTests(unittest.TestCase):
                 ["alpha_signed.pdf", "beta_signed.pdf"],
             )
 
+    def test_signed_history_delete_is_only_available_for_admin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_dir = Path(directory)
+            (signed_dir / "contratto_signed.pdf").write_bytes(b"%PDF")
+            page = FakePage()
+            view = MainView(page, signed_history_directory=signed_dir)
+
+            view.show_signed_history()
+
+            self.assertEqual(
+                [_button_label(button) for button in page.dialog.actions],
+                ["Chiudi"],
+            )
+
+            view._set_admin_mode(True)
+            view.show_signed_history()
+
+            self.assertEqual(
+                [_button_label(button) for button in page.dialog.actions],
+                ["Elimina", "Chiudi"],
+            )
+
+    def test_signed_history_delete_removes_signed_files_after_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_dir = Path(directory)
+            signed_pdf = signed_dir / "contratto_signed.pdf"
+            second_pdf = signed_dir / "visita_signed.pdf"
+            ignored_txt = signed_dir / "note.txt"
+            signed_pdf.write_bytes(b"%PDF")
+            second_pdf.write_bytes(b"%PDF")
+            ignored_txt.write_text("ignore", encoding="utf-8")
+            page = FakePage()
+            view = MainView(page, signed_history_directory=signed_dir)
+            view._set_admin_mode(True)
+
+            view.show_signed_history()
+            page.dialog.actions[0].on_click(None)
+
+            self.assertEqual(page.dialog.title.value, "Elimina storico")
+
+            page.dialog.actions[1].on_click(None)
+
+            self.assertFalse(signed_pdf.exists())
+            self.assertFalse(second_pdf.exists())
+            self.assertTrue(ignored_txt.exists())
+            self.assertEqual(
+                page.dialog.content.content.controls[1].content.content.value,
+                "Nessun documento firmato trovato",
+            )
+            self.assertEqual(
+                view._document_status.value,
+                "Stato: eliminati 2 documenti dallo storico",
+            )
+
     def test_template_history_lists_learned_templates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             template_dir = Path(directory)
@@ -1191,6 +1269,124 @@ class MainViewTests(unittest.TestCase):
             self.assertEqual(
                 [row.cells[0].content.content.value for row in table.rows],
                 ["learned_alpha.json", "learned_beta.json"],
+            )
+
+    def test_template_history_delete_is_only_available_for_admin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = Path(directory)
+            (template_dir / "learned_privacy.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            page = FakePage()
+            view = MainView(page, learned_template_directory=template_dir)
+
+            view.show_template_history()
+
+            button_row = page.dialog.content.content.controls[2]
+            self.assertEqual(
+                [_button_label(button) for button in button_row.controls],
+                ["Aggiorna", "Scarica", "Carica", "Sincronizza"],
+            )
+
+            view._set_admin_mode(True)
+            view.show_template_history()
+
+            button_row = page.dialog.content.content.controls[2]
+            self.assertEqual(
+                [_button_label(button) for button in button_row.controls],
+                ["Elimina", "Aggiorna", "Scarica", "Carica", "Sincronizza"],
+            )
+
+    def test_template_history_delete_removes_learned_templates_after_confirmation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = Path(directory)
+            learned_alpha = template_dir / "learned_alpha.json"
+            learned_beta = template_dir / "learned_beta.json"
+            manual = template_dir / "manual.json"
+            learned_alpha.write_text("{}", encoding="utf-8")
+            learned_beta.write_text("{}", encoding="utf-8")
+            manual.write_text("{}", encoding="utf-8")
+            page = FakePage()
+            view = MainView(page, learned_template_directory=template_dir)
+            view._set_admin_mode(True)
+
+            view.show_template_history()
+            button_row = page.dialog.content.content.controls[2]
+            button_row.controls[0].on_click(None)
+
+            self.assertEqual(page.dialog.title.value, "Elimina template")
+
+            page.dialog.actions[1].on_click(None)
+
+            self.assertFalse(learned_alpha.exists())
+            self.assertFalse(learned_beta.exists())
+            self.assertTrue(manual.exists())
+            self.assertEqual(
+                page.dialog.content.content.controls[1].content.content.value,
+                "Nessun template documento trovato",
+            )
+            self.assertEqual(
+                page.dialog.content.content.controls[3].value,
+                "Eliminati 2 template",
+            )
+
+    def test_template_history_delete_uses_sync_service_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = Path(directory)
+            learned_alpha = template_dir / "learned_alpha.json"
+            learned_beta = template_dir / "learned_beta.json"
+            learned_alpha.write_text("{}", encoding="utf-8")
+            learned_beta.write_text("{}", encoding="utf-8")
+            page = FakePage()
+            sync_service = FakeTemplateSyncService(template_dir)
+            view = MainView(
+                page,
+                template_sync_service=sync_service,
+                learned_template_directory=template_dir,
+            )
+            view._set_admin_mode(True)
+
+            view.show_template_history()
+            page.dialog.content.content.controls[2].controls[0].on_click(None)
+            page.dialog.actions[1].on_click(None)
+
+            self.assertEqual(sync_service.delete_count, 1)
+            self.assertFalse(learned_alpha.exists())
+            self.assertFalse(learned_beta.exists())
+            self.assertEqual(
+                page.dialog.content.content.controls[3].value,
+                "Eliminati 2 template (Supabase: 2)",
+            )
+
+    def test_template_history_delete_stays_available_for_remote_only_cleanup(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = Path(directory)
+            page = FakePage()
+            sync_service = FakeTemplateSyncService(template_dir)
+            sync_service.remote_delete_count = 14
+            view = MainView(
+                page,
+                template_sync_service=sync_service,
+                learned_template_directory=template_dir,
+            )
+            view._set_admin_mode(True)
+
+            view.show_template_history()
+            delete_button = page.dialog.content.content.controls[2].controls[0]
+
+            self.assertFalse(delete_button.disabled)
+
+            delete_button.on_click(None)
+            page.dialog.actions[1].on_click(None)
+
+            self.assertEqual(sync_service.delete_count, 1)
+            self.assertEqual(
+                page.dialog.content.content.controls[3].value,
+                "Eliminati 14 template da Supabase",
             )
 
     def test_template_download_refreshes_template_grid(self) -> None:
@@ -1541,6 +1737,23 @@ class MainViewTests(unittest.TestCase):
 
         self.assertEqual(captured[0].media_type, "image/svg+xml")
         self.assertIn(b"polyline", captured[0].content)
+
+    def test_signature_dialog_uses_requested_canvas_as_svg_viewbox(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        captured = []
+
+        view.open_signature_dialog(
+            captured.append,
+            canvas_width=420,
+            canvas_height=120,
+        )
+        view._start_signature_stroke(_event(10, 20))
+        view._finish_signature_stroke(_event(70, 80))
+        page.dialog.actions[2].on_click(None)
+
+        self.assertIn(b"viewBox='0 0 420 120'", captured[0].content)
+        self.assertEqual(view._signature_canvas.height, 120)
 
     def test_information_uses_the_current_flet_dialog_api(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2319,6 +2532,7 @@ class MainViewTests(unittest.TestCase):
     def test_startup_user_confirmation_keeps_logo_when_erp_document_list_is_disabled(self) -> None:
         page = FakePage()
         service = FakeGeneralPreferencesService()
+        service.settings = SupabaseSettings(list_erp_documents=False)
         service.erp_settings = ErpUserSettings(
             documents_url="https://erp.example.test/documents",
             selected_user_id="3",
@@ -2668,7 +2882,7 @@ class FakeCertificateService:
 
 class FakeGeneralPreferencesService:
     def __init__(self) -> None:
-        self.settings = SupabaseSettings()
+        self.settings = SupabaseSettings(list_erp_documents=True)
         self.erp_settings = ErpUserSettings()
         self.erp_documents_result = ErpDocumentsResult(True, "Nessun documento da firmare", ())
         self.erp_document_results: list[ErpDocumentsResult] = []
@@ -2807,15 +3021,23 @@ class FakeTemplateSyncResult:
         uploaded: int = 0,
         downloaded: int = 0,
         skipped: int = 0,
+        deleted: int = 0,
+        remote_deleted: int = 0,
+        remote_remaining: int = 0,
     ) -> None:
         self.uploaded = uploaded
         self.downloaded = downloaded
         self.skipped = skipped
+        self.deleted = deleted
+        self.remote_deleted = remote_deleted
+        self.remote_remaining = remote_remaining
 
 
 class FakeTemplateSyncService:
     def __init__(self, template_dir: Path) -> None:
         self._template_dir = template_dir
+        self.delete_count = 0
+        self.remote_delete_count = 0
 
     def download_templates(self) -> FakeTemplateSyncResult:
         (self._template_dir / "learned_synced.json").write_text(
@@ -2830,3 +3052,15 @@ class FakeTemplateSyncService:
     def sync_templates(self) -> FakeTemplateSyncResult:
         self.download_templates()
         return FakeTemplateSyncResult(uploaded=1, downloaded=1)
+
+    def delete_templates(self) -> FakeTemplateSyncResult:
+        self.delete_count += 1
+        deleted = 0
+        for path in self._template_dir.glob("learned_*.json"):
+            if path.is_file():
+                path.unlink()
+                deleted += 1
+        return FakeTemplateSyncResult(
+            deleted=deleted,
+            remote_deleted=self.remote_delete_count or deleted,
+        )

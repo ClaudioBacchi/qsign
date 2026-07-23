@@ -1,4 +1,4 @@
-"""Small SOAP client for Zucchetti InfinityDmsInterface document download."""
+"""Small SOAP client for Zucchetti InfinityDmsInterface document transfer."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ DEFAULT_MAX_PDF_BYTES = 100 * 1024 * 1024
 
 
 class InfinityDmsClientError(RuntimeError):
-    """Raised when Infinity DMS document download fails safely."""
+    """Raised when Infinity DMS document transfer fails safely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +79,53 @@ class InfinityDmsClient:
                 elif get_error is None:
                     raise
 
+    def upload_document(
+        self,
+        *,
+        service_url: str,
+        credentials: InfinityDmsCredentials,
+        content: bytes,
+        logical_dir: str,
+        logical_name: str,
+        flags: str = "0",
+        again: str = "0",
+    ) -> str:
+        logical_dir = logical_dir.strip()
+        logical_name = logical_name.strip()
+        if not logical_dir:
+            raise InfinityDmsClientError("Directory logica documentale non configurata")
+        if not logical_name:
+            raise InfinityDmsClientError("Nome logico documentale non configurato")
+        encoded = _encode_pdf_base64(content, max_pdf_bytes=self._max_pdf_bytes)
+        context_id = self._connect(service_url, credentials)
+        copy_result: str | None = None
+        copy_error: BaseException | None = None
+        try:
+            copy_result = self._copy_file(
+                service_url,
+                context_id,
+                encoded,
+                logical_dir,
+                logical_name,
+                flags,
+                again,
+            )
+            return copy_result
+        except BaseException as error:
+            copy_error = error
+            raise
+        finally:
+            try:
+                self._disconnect(service_url, context_id)
+            except InfinityDmsClientError as error:
+                if copy_result is not None and self._logger is not None:
+                    self._logger.warning(
+                        "Infinity DMS disconnect failed after document upload",
+                        error=str(error),
+                    )
+                elif copy_error is None:
+                    raise
+
     def _connect(
         self,
         service_url: str,
@@ -116,6 +163,30 @@ class InfinityDmsClient:
         payload = self._post(service_url, envelope)
         encoded = _required_text(payload, "getDocumentReturn")
         return _decode_pdf_base64(encoded, max_pdf_bytes=self._max_pdf_bytes)
+
+    def _copy_file(
+        self,
+        service_url: str,
+        context_id: str,
+        encoded_pdf: str,
+        logical_dir: str,
+        logical_name: str,
+        flags: str,
+        again: str,
+    ) -> str:
+        envelope = _soap_envelope(
+            "copyFile",
+            {
+                "sContextId": context_id,
+                "bFile": encoded_pdf,
+                "sLogicalDir": logical_dir,
+                "sLogicalName": logical_name,
+                "sFlags": flags,
+                "iAgain": again,
+            },
+        )
+        payload = self._post(service_url, envelope)
+        return _required_text(payload, "copyFileReturn")
 
     def _disconnect(self, service_url: str, context_id: str) -> None:
         envelope = _soap_envelope("disconnect", {"sContextId": context_id})
@@ -226,6 +297,21 @@ def _decode_pdf_base64(
         raise InfinityDmsClientError("Documento documentale non PDF")
     _validate_pdf_structure(content)
     return content
+
+
+def _encode_pdf_base64(
+    content: bytes,
+    *,
+    max_pdf_bytes: int = DEFAULT_MAX_PDF_BYTES,
+) -> str:
+    if not content:
+        raise InfinityDmsClientError("Documento documentale vuoto")
+    if len(content) > max_pdf_bytes:
+        raise InfinityDmsClientError("Documento documentale troppo grande")
+    if not content.startswith(b"%PDF-"):
+        raise InfinityDmsClientError("Documento documentale non PDF")
+    _validate_pdf_structure(content)
+    return base64.b64encode(content).decode("ascii")
 
 
 def _estimated_base64_decoded_size(value: str) -> int:

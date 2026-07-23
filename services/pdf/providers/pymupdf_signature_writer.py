@@ -3,7 +3,6 @@
 from pathlib import Path
 from collections.abc import Sequence
 import os
-import re
 import tempfile
 import uuid
 
@@ -16,13 +15,14 @@ from services.pdf.pdf_signature import (
     VisiblePDFSignatureWriter,
 )
 from services.signature.signature_service import CapturedSignature
+from services.signature.svg_signature import (
+    fit_svg_signature_strokes,
+    parse_svg_signature,
+)
 
 
 class PyMuPDFSignatureWriter(VisiblePDFSignatureWriter):
     """Write a visible signature into a PDF copy using PyMuPDF."""
-
-    _SIGNATURE_VIEWBOX_WIDTH = 420.0
-    _SIGNATURE_VIEWBOX_HEIGHT = 180.0
 
     def __init__(
         self,
@@ -106,8 +106,8 @@ class PyMuPDFSignatureWriter(VisiblePDFSignatureWriter):
         if area.width <= 0 or area.height <= 0:
             raise ValueError("Signature area must have positive dimensions")
 
-        strokes = _signature_strokes_from_svg(signature.content)
-        if not strokes:
+        geometry = parse_svg_signature(signature.content)
+        if not geometry.strokes:
             raise ValueError("Captured signature does not contain drawable strokes")
 
     def _draw_visible_signature(
@@ -119,19 +119,21 @@ class PyMuPDFSignatureWriter(VisiblePDFSignatureWriter):
         if not 0 <= area.page_index < document.page_count:
             raise IndexError("Signature page index is outside the document")
 
-        strokes = _signature_strokes_from_svg(signature.content)
+        geometry = parse_svg_signature(signature.content)
+        strokes, scale = fit_svg_signature_strokes(
+            geometry,
+            target_x=area.x,
+            target_y=area.y,
+            target_width=area.width,
+            target_height=area.height,
+        )
         page = document.load_page(area.page_index)
         try:
-            shape = page.new_shape()
-            scale_x = area.width / self._SIGNATURE_VIEWBOX_WIDTH
-            scale_y = area.height / self._SIGNATURE_VIEWBOX_HEIGHT
-            stroke_width = max(0.8, min(scale_x, scale_y) * 3.0)
+            stroke_width = max(0.8, scale * 3.0)
             for stroke in strokes:
+                shape = page.new_shape()
                 scaled_points = [
-                    pymupdf.Point(
-                        area.x + (point[0] * scale_x),
-                        area.y + (point[1] * scale_y),
-                    )
+                    pymupdf.Point(point[0], point[1])
                     for point in stroke
                 ]
                 shape.draw_polyline(scaled_points)
@@ -140,28 +142,15 @@ class PyMuPDFSignatureWriter(VisiblePDFSignatureWriter):
                     width=stroke_width,
                     lineCap=1,
                     lineJoin=1,
+                    closePath=False,
                 )
-            shape.commit()
+                shape.commit()
         finally:
             del page
 
 
 def _signature_strokes_from_svg(content: bytes) -> list[list[tuple[float, float]]]:
-    svg = content.decode("utf-8", errors="ignore")
-    strokes: list[list[tuple[float, float]]] = []
-    for match in re.finditer(r"<polyline\b[^>]*\bpoints=(['\"])(.*?)\1", svg):
-        points: list[tuple[float, float]] = []
-        for point in match.group(2).split():
-            x_value, separator, y_value = point.partition(",")
-            if not separator:
-                continue
-            try:
-                points.append((float(x_value), float(y_value)))
-            except ValueError:
-                continue
-        if len(points) > 1:
-            strokes.append(points)
-    return strokes
+    return [list(stroke) for stroke in parse_svg_signature(content).strokes]
 
 
 def _temporary_pdf_path(destination: Path) -> Path:
