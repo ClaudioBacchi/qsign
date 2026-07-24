@@ -1023,12 +1023,16 @@ class MainViewTests(unittest.TestCase):
 
         content = view._home_view.content
         header = content.content.controls[0]
-        table = content.content.controls[1].content.controls[0]
+        flow_list = content.content.controls[1].content
+        table = flow_list.controls[0]
         rows = table.rows
 
         self.assertEqual(header.controls[0].value, "Flussi documenti")
         self.assertEqual(header.controls[2].semantics_label, "QSign")
         self.assertEqual(header.controls[2].width, 170)
+        self.assertTrue(flow_list.scroll.thumb_visibility)
+        self.assertTrue(flow_list.scroll.track_visibility)
+        self.assertEqual(flow_list.scroll.thickness, 14)
         self.assertEqual(
             [(event.document, event.status) for event in flow_log.appended],
             [
@@ -1118,11 +1122,19 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(menu_bar.controls[0].style.bgcolor, view._ft.Colors.TRANSPARENT)
         self.assertEqual(
             [control.content.value for control in menu_bar.controls[0].controls],
-            ["Apri", "Chiudi", "Salva", "Storico", "Template", "Aggiungi zona firma"],
+            [
+                "Apri",
+                "Chiudi",
+                "Salva",
+                "Storico",
+                "Template",
+                "Aggiungi zona firma",
+                "Rimuovi zona firma",
+            ],
         )
         self.assertEqual(
             [control.width for control in menu_bar.controls[0].controls],
-            [180, 180, 180, 180, 180, 180],
+            [180, 180, 180, 180, 180, 180, 180],
         )
         self.assertEqual(
             [control.content.value for control in menu_bar.controls[1].controls],
@@ -1137,8 +1149,8 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(menu_bar.controls[1].controls[2].width, 180)
 
         icon_toolbar = toolbar.controls[1]
-        self.assertEqual(icon_toolbar.controls[11], view._security_button)
-        self.assertTrue(getattr(icon_toolbar.controls[12], "expand", False))
+        self.assertEqual(icon_toolbar.controls[12], view._security_button)
+        self.assertTrue(getattr(icon_toolbar.controls[13], "expand", False))
         tooltips = [
             getattr(control, "tooltip", None)
             for control in icon_toolbar.controls
@@ -1152,6 +1164,7 @@ class MainViewTests(unittest.TestCase):
                 "Chiudi",
                 "Storico",
                 "Aggiungi zona firma",
+                "Rimuovi zona firma selezionata",
                 "Pagina precedente",
                 "Pagina successiva",
                 "Zoom -",
@@ -1159,6 +1172,47 @@ class MainViewTests(unittest.TestCase):
                 "Sblocca impostazioni amministratore",
             ],
         )
+
+    def test_preferences_menu_shows_logs_only_for_admin(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.build()
+
+        toolbar = page.controls[0].controls[0].content
+        preferences_menu = toolbar.controls[0].controls[1]
+        self.assertEqual(
+            [control.content.value for control in preferences_menu.controls],
+            ["Impostazioni", "Connessione ERP", "Certificato"],
+        )
+
+        view._set_admin_mode(True)
+
+        self.assertEqual(
+            [control.content.value for control in preferences_menu.controls],
+            ["Impostazioni", "Connessione ERP", "Certificato", "Logs"],
+        )
+
+        view._set_admin_mode(False)
+
+        self.assertEqual(
+            [control.content.value for control in preferences_menu.controls],
+            ["Impostazioni", "Connessione ERP", "Certificato"],
+        )
+
+    def test_qsign_logs_menu_opens_log_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "qsign.log"
+            page = FakePage()
+            view = MainView(page, log_file_path=log_path)
+            view.build()
+            view._set_admin_mode(True)
+
+            toolbar = page.controls[0].controls[0].content
+            logs_item = toolbar.controls[0].controls[1].controls[3]
+            logs_item.on_click(None)
+
+            self.assertEqual(page.launched_urls, [log_path.parent.resolve().as_uri()])
 
     def test_activate_window_restores_focuses_and_updates_window(self) -> None:
         page = FakePage()
@@ -1938,6 +1992,45 @@ class MainViewTests(unittest.TestCase):
         page.dialog.actions[1].on_click(None)
         self.assertEqual(calls, ["cancel", "confirm"])
 
+    def test_incomplete_signature_boxes_dialog_routes_operator_choice(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        calls: list[str] = []
+
+        view.ask_incomplete_signature_boxes(
+            1,
+            lambda: calls.append("sign_missing"),
+            lambda: calls.append("save_anyway"),
+            lambda: calls.append("cancel"),
+        )
+
+        self.assertEqual(page.dialog.title.value, "Zone firma incomplete")
+        self.assertEqual(
+            [_button_label(button) for button in page.dialog.actions],
+            ["Annulla", "Firma le zone mancanti", "Invia comunque"],
+        )
+
+        page.dialog.actions[0].on_click(None)
+        self.assertEqual(calls, ["cancel"])
+
+        view.ask_incomplete_signature_boxes(
+            2,
+            lambda: calls.append("sign_missing"),
+            lambda: calls.append("save_anyway"),
+            lambda: calls.append("cancel"),
+        )
+        page.dialog.actions[1].on_click(None)
+        self.assertEqual(calls, ["cancel", "sign_missing"])
+
+        view.ask_incomplete_signature_boxes(
+            2,
+            lambda: calls.append("sign_missing"),
+            lambda: calls.append("save_anyway"),
+            lambda: calls.append("cancel"),
+        )
+        page.dialog.actions[2].on_click(None)
+        self.assertEqual(calls, ["cancel", "sign_missing", "save_anyway"])
+
     def test_signature_dialog_confirms_current_stroke_even_without_pan_end(self) -> None:
         page = FakePage()
         view = MainView(page)
@@ -1950,6 +2043,26 @@ class MainViewTests(unittest.TestCase):
 
         self.assertEqual(captured[0].media_type, "image/svg+xml")
         self.assertIn(b"polyline", captured[0].content)
+
+    def test_signature_dialog_can_remove_selected_signature_box(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        calls: list[str] = []
+
+        view.open_signature_dialog(
+            lambda _: calls.append("confirm"),
+            on_remove_signature_box=lambda: calls.append("remove"),
+        )
+
+        self.assertEqual(
+            [_button_label(button) for button in page.dialog.actions],
+            ["Cancella", "Annulla", "Rimuovi zona", "Conferma"],
+        )
+
+        page.dialog.actions[2].on_click(None)
+
+        self.assertEqual(calls, ["remove"])
+        self.assertTrue(page.dialog_popped)
 
     def test_signature_dialog_uses_requested_canvas_as_svg_viewbox(self) -> None:
         page = FakePage()
@@ -2947,7 +3060,7 @@ class MainViewTests(unittest.TestCase):
 
         self.assertFalse(view._admin_mode)
         self.assertEqual(view._security_button.icon, view._ft.Icons.LOCK)
-        self.assertEqual(view._document_status.value, "Stato: modalitÃ  operatore attiva")
+        self.assertEqual(view._document_status.value, "Stato: modalità operatore attiva")
 
 
 if __name__ == "__main__":

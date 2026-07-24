@@ -46,6 +46,10 @@ class FakeViewer:
         self.defer_viewer_refresh_count = 0
         self.discard_callback = None
         self.cancel_discard_callback = None
+        self.incomplete_missing_count = None
+        self.sign_missing_callback = None
+        self.save_incomplete_callback = None
+        self.cancel_incomplete_callback = None
 
     def display_document(
         self,
@@ -104,12 +108,25 @@ class FakeViewer:
         self.discard_callback = on_confirm
         self.cancel_discard_callback = on_cancel
 
+    def ask_incomplete_signature_boxes(
+        self,
+        missing_count,
+        on_sign_missing,
+        on_save_anyway,
+        on_cancel,
+    ) -> None:
+        self.incomplete_missing_count = missing_count
+        self.sign_missing_callback = on_sign_missing
+        self.save_incomplete_callback = on_save_anyway
+        self.cancel_incomplete_callback = on_cancel
+
     def open_signature_dialog(
         self,
         on_confirm,
         on_clear,
         on_cancel,
         *,
+        on_remove_signature_box=None,
         canvas_width=None,
         canvas_height=None,
     ) -> None:
@@ -148,6 +165,30 @@ class DeferredBackgroundViewer(FakeViewer):
 
     def run_ui_task(self, callback) -> None:
         self.ui_tasks.append(callback)
+
+
+class PassiveSignatureDialogViewer(FakeViewer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.signature_confirm_callback = None
+        self.remove_signature_box_callback = None
+        self.open_signature_dialog_count = 0
+
+    def open_signature_dialog(
+        self,
+        on_confirm,
+        on_clear,
+        on_cancel,
+        *,
+        on_remove_signature_box=None,
+        canvas_width=None,
+        canvas_height=None,
+    ) -> None:
+        self.open_signature_dialog_called = True
+        self.open_signature_dialog_count += 1
+        self.signature_confirm_callback = on_confirm
+        self.remove_signature_box_callback = on_remove_signature_box
+        self.signature_dialog_canvas_size = (canvas_width, canvas_height)
 
 
 class FakeSignatureProvider:
@@ -1663,6 +1704,162 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertTrue(self.view.cleared)
         self.assertIn("PDF firmato salvato", self.view.statuses[-1])
 
+    def test_auto_save_waits_for_all_signature_boxes(self) -> None:
+        view = PassiveSignatureDialogViewer()
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create("qsign.tests.controller.auto_save_multi"),
+            general_preferences_service=FakeGeneralPreferencesService(
+                auto_save_signed_documents=True
+            ),
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        controller.add_signature_box()
+        controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+        overlays = view.pages[-1][4]
+        first_target_id = overlays[0].target_id
+        first_signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+
+        controller.open_signature_dialog(first_target_id)
+        view.signature_confirm_callback(first_signature)
+
+        self.service.save_signed_preview.assert_not_called()
+        self.service.save_signed_previews.assert_not_called()
+        self.service.close_document.assert_not_called()
+        self.assertFalse(view.cleared)
+        self.assertTrue(controller.has_unsaved_signed_document())
+        self.assertEqual(view.open_signature_dialog_count, 2)
+        overlays = view.pages[-1][4]
+        self.assertEqual(overlays[0].signature_content, first_signature.content)
+        self.assertIsNone(overlays[1].signature_content)
+
+    def test_incomplete_multi_box_workflow_does_not_show_discard_loop(self) -> None:
+        view = PassiveSignatureDialogViewer()
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create("qsign.tests.controller.incomplete_multi"),
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        controller.add_signature_box()
+        controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+        overlays = view.pages[-1][4]
+        controller.open_signature_dialog(overlays[0].target_id)
+        view.signature_confirm_callback(
+            CapturedSignature(
+                content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                media_type="image/svg+xml",
+            )
+        )
+        calls_before = self.service.render_page.call_count
+
+        controller.zoom_in()
+
+        self.assertIsNone(view.discard_callback)
+        self.assertGreater(self.service.render_page.call_count, calls_before)
+        self.assertTrue(controller.has_unsaved_signed_document())
+
+    def test_save_signed_pdf_with_missing_boxes_asks_operator_choice(self) -> None:
+        view = PassiveSignatureDialogViewer()
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create("qsign.tests.controller.partial_multi"),
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        controller.add_signature_box()
+        controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+        overlays = view.pages[-1][4]
+        controller.open_signature_dialog(overlays[0].target_id)
+        view.signature_confirm_callback(
+            CapturedSignature(
+                content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                media_type="image/svg+xml",
+            )
+        )
+
+        controller.save_signed_pdf()
+
+        self.assertEqual(view.incomplete_missing_count, 1)
+        self.service.save_signed_preview.assert_not_called()
+        self.service.save_signed_previews.assert_not_called()
+        self.assertFalse(view.cleared)
+
+        view.sign_missing_callback()
+
+        self.assertEqual(view.open_signature_dialog_count, 3)
+
+    def test_unsaved_added_signature_box_can_still_be_signed_from_missing_prompt(self) -> None:
+        view = PassiveSignatureDialogViewer()
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create(
+                "qsign.tests.controller.unsaved_added_box"
+            ),
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        controller.add_signature_box()
+        controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+        view.cancel_save_callback()
+        overlays = view.pages[-1][4]
+        first_target_id = overlays[0].target_id
+
+        controller.open_signature_dialog(first_target_id)
+        view.signature_confirm_callback(
+            CapturedSignature(
+                content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                media_type="image/svg+xml",
+            )
+        )
+        controller.save_signed_pdf()
+        view.sign_missing_callback()
+
+        self.assertEqual(view.incomplete_missing_count, 1)
+        self.assertEqual(view.open_signature_dialog_count, 3)
+        self.assertEqual(len(view.pages[-1][4]), 2)
+        self.assertEqual(view.errors, [])
+
+    def test_save_signed_pdf_can_send_incomplete_after_operator_confirmation(self) -> None:
+        view = PassiveSignatureDialogViewer()
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create("qsign.tests.controller.partial_multi_send"),
+        )
+        self.service.save_signed_preview.return_value = Path(
+            "dist/signed/sample_signed.pdf"
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        controller.add_signature_box()
+        controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+        overlays = view.pages[-1][4]
+        first_signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        controller.open_signature_dialog(overlays[0].target_id)
+        view.signature_confirm_callback(first_signature)
+
+        controller.save_signed_pdf()
+        view.save_incomplete_callback()
+
+        saved_signature, area = self.service.save_signed_preview.call_args.args
+        self.assertEqual(saved_signature, first_signature)
+        self.assertEqual(area.x, 20)
+        self.service.save_signed_previews.assert_not_called()
+        self.service.close_document.assert_called_once()
+        self.assertTrue(view.cleared)
+
     def test_learned_manual_template_prefers_current_anchor_over_fixed_page(self) -> None:
         self.controller = PDFViewerController(
             pdf_service=self.service,
@@ -1797,6 +1994,57 @@ class PDFViewerControllerTests(unittest.TestCase):
             self.assertIn('"x_offset": 20', content)
             self.assertIn('"x_offset": 110.0', content)
 
+    def test_removing_selected_signature_box_updates_saved_template(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            view = PassiveSignatureDialogViewer()
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=view,
+                logger=LoggingService.create(
+                    "qsign.tests.controller.remove_template_box"
+                ),
+                pdf_provider=FakePDFProviderWithoutAnchors(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create(
+                        "qsign.tests.controller.remove_template_box_detector"
+                    )
+                ),
+                template_repository=FakeTemplateRepository(),
+                template_root=directory,
+            )
+
+            controller.open_document("sample.pdf")
+            controller.add_signature_box()
+            controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+            view.save_callback()
+            overlays = view.pages[-1][4]
+            controller.open_signature_dialog(overlays[1].target_id)
+
+            self.assertIsNotNone(view.remove_signature_box_callback)
+            view.remove_signature_box_callback()
+            view.save_callback()
+
+            overlays = view.pages[-1][4]
+            self.assertEqual([overlay.label for overlay in overlays], ["Zona firma"])
+            self.assertEqual(overlays[0].left, 20)
+            saved_templates = list(Path(directory).glob("learned_*.json"))
+            self.assertEqual(len(saved_templates), 1)
+            content = saved_templates[0].read_text(encoding="utf-8")
+            self.assertIn('"placement_id": "manual-signature"', content)
+            self.assertNotIn('"placement_id": "manual-signature-2"', content)
+
+    def test_removing_only_signature_box_is_rejected(self) -> None:
+        self.controller.open_document("sample.pdf")
+        self.controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+
+        self.controller.remove_selected_signature_box()
+
+        self.assertEqual(
+            self.view.errors[-1],
+            "Almeno una zona firma deve rimanere",
+        )
+        self.assertEqual(len(self.view.pages[-1][4]), 1)
+
     def test_updating_learned_template_keeps_recognized_template_filename(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = PDFViewerController(
@@ -1825,6 +2073,60 @@ class PDFViewerControllerTests(unittest.TestCase):
             content = original_template.read_text(encoding="utf-8")
             self.assertIn('"placement_id": "manual-signature"', content)
             self.assertIn('"placement_id": "manual-signature-2"', content)
+
+    def test_reopened_signed_pdf_saves_new_added_box_without_incomplete_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.document = PDFDocument(
+                path=Path("documenti_firmati/sample_signed_20260724.pdf"),
+                filename="sample_signed_20260724.pdf",
+                page_count=1,
+                page_sizes=(PageSize(200, 200),),
+                loaded=True,
+            )
+            self.service.open_document.return_value = self.document
+            self.service.current_document = self.document
+            self.service.save_signed_preview.return_value = Path(
+                "documenti_firmati/sample_signed_20260724_signed.pdf"
+            )
+            view = PassiveSignatureDialogViewer()
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=view,
+                logger=LoggingService.create(
+                    "qsign.tests.controller.reopened_signed_add"
+                ),
+                pdf_provider=FakePDFProviderWithoutAnchors(),
+                anchor_detector=AnchorDetector(
+                    LoggingService.create(
+                        "qsign.tests.controller.reopened_signed_add_detector"
+                    )
+                ),
+                template_repository=FakeRecognizedLearnedTemplateRepository(),
+                template_root=directory,
+            )
+
+            controller.open_document(
+                "documenti_firmati/sample_signed_20260724.pdf"
+            )
+            controller.add_signature_box()
+            controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+            view.save_callback()
+            overlays = view.pages[-1][4]
+            controller.open_signature_dialog(overlays[1].target_id)
+            new_signature = CapturedSignature(
+                content=b"<svg><polyline points='3,3 4,4'/></svg>",
+                media_type="image/svg+xml",
+            )
+            view.signature_confirm_callback(new_signature)
+
+            controller.save_signed_pdf()
+
+            self.assertIsNone(view.incomplete_missing_count)
+            saved_signature, area = self.service.save_signed_preview.call_args.args
+            self.assertEqual(saved_signature, new_signature)
+            self.assertEqual(area.x, 110)
+            self.service.save_signed_previews.assert_not_called()
+            self.assertTrue(view.cleared)
 
     def test_learned_manual_boxes_are_used_even_when_demo_anchor_matches(self) -> None:
         self.controller = PDFViewerController(

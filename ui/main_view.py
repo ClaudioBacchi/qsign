@@ -119,6 +119,7 @@ class MainView:
         signed_history_directory: str | Path = Path("documenti_firmati"),
         learned_template_directory: str | Path = "templates",
         app_config_path: str | Path = Path("config") / "app.yaml",
+        log_file_path: str | Path = Path("logs") / "qsign.log",
         erp_temp_base_directory: str | Path | None = None,
         erp_temp_session_id: str | None = None,
         on_general_preferences_saved: Callable[[SupabaseSettings], None] | None = None,
@@ -142,6 +143,7 @@ class MainView:
         )
         self._learned_template_directory = Path(learned_template_directory)
         self._app_config_path = Path(app_config_path)
+        self._log_file_path = Path(log_file_path)
         self._erp_temp_base_directory = (
             Path(erp_temp_base_directory)
             if erp_temp_base_directory is not None
@@ -157,6 +159,7 @@ class MainView:
         self._on_zoom_out: Callable[[], None] | None = None
         self._on_save_signed_pdf: Callable[[], None] | None = None
         self._on_add_signature_box: Callable[[], None] | None = None
+        self._on_remove_signature_box: Callable[[], None] | None = None
         self._on_signature_area_click: Callable[[str | None], None] | None = None
         self._on_manual_signature_rect: (
             Callable[[float, float, float, float, float, float], None] | None
@@ -168,6 +171,7 @@ class MainView:
         self._active_dialog: object | None = None
         self._admin_mode = False
         self._security_button: object | None = None
+        self._preferences_menu_button: object | None = None
         self._erp_auto_refresh_stop = threading.Event()
         self._erp_auto_refresh_thread: threading.Thread | None = None
         self._erp_auto_refresh_lock = threading.Lock()
@@ -294,6 +298,7 @@ class MainView:
             Callable[[float, float, float, float, float, float], None] | None
         ) = None,
         on_add_signature_box: Callable[[], None] | None = None,
+        on_remove_signature_box: Callable[[], None] | None = None,
         on_signature_area_click: Callable[[str | None], None] | None = None,
     ) -> None:
         """Bind controller actions without exposing Flet outside the view."""
@@ -306,6 +311,7 @@ class MainView:
         self._on_save_signed_pdf = on_save_signed_pdf
         self._on_manual_signature_rect = on_manual_signature_rect
         self._on_add_signature_box = on_add_signature_box
+        self._on_remove_signature_box = on_remove_signature_box
         self._on_signature_area_click = on_signature_area_click
 
     def build(self) -> None:
@@ -502,6 +508,11 @@ class MainView:
             padding=ft.Padding(left=8, top=6, right=8, bottom=6),
         )
         menu_item_width = 180
+        self._preferences_menu_button = ft.SubmenuButton(
+            content=ft.Text("Preferenze"),
+            style=menu_button_style,
+            controls=self._build_preferences_menu_items(menu_item_width),
+        )
         return ft.MenuBar(
             style=menu_style,
             controls=[
@@ -541,29 +552,16 @@ class MainView:
                                 self._on_add_signature_box
                             ),
                         ),
-                    ],
-                ),
-                ft.SubmenuButton(
-                    content=ft.Text("Preferenze"),
-                    style=menu_button_style,
-                    controls=[
                         ft.MenuItemButton(
-                            content=ft.Text("Impostazioni"),
+                            content=ft.Text("Rimuovi zona firma"),
                             width=menu_item_width,
-                            on_click=lambda _: self.show_general_preferences(),
-                        ),
-                        ft.MenuItemButton(
-                            content=ft.Text("Connessione ERP"),
-                            width=menu_item_width,
-                            on_click=lambda _: self.show_user_preferences(),
-                        ),
-                        ft.MenuItemButton(
-                            content=ft.Text("Certificato"),
-                            width=menu_item_width,
-                            on_click=lambda _: self.show_certificate_preferences(),
+                            on_click=lambda _: self._invoke(
+                                self._on_remove_signature_box
+                            ),
                         ),
                     ],
                 ),
+                self._preferences_menu_button,
                 ft.MenuItemButton(
                     content=ft.Text("Informazioni"),
                     style=menu_button_style,
@@ -571,6 +569,35 @@ class MainView:
                 ),
             ],
         )
+
+    def _build_preferences_menu_items(self, menu_item_width: int) -> list[object]:
+        ft = self._ft
+        items = [
+            ft.MenuItemButton(
+                content=ft.Text("Impostazioni"),
+                width=menu_item_width,
+                on_click=lambda _: self.show_general_preferences(),
+            ),
+            ft.MenuItemButton(
+                content=ft.Text("Connessione ERP"),
+                width=menu_item_width,
+                on_click=lambda _: self.show_user_preferences(),
+            ),
+            ft.MenuItemButton(
+                content=ft.Text("Certificato"),
+                width=menu_item_width,
+                on_click=lambda _: self.show_certificate_preferences(),
+            ),
+        ]
+        if self._admin_mode:
+            items.append(
+                ft.MenuItemButton(
+                    content=ft.Text("Logs"),
+                    width=menu_item_width,
+                    on_click=lambda _: self.open_qsign_logs_folder(),
+                )
+            )
+        return items
 
     def _build_icon_toolbar(self) -> object:
         ft = self._ft
@@ -609,6 +636,11 @@ class MainView:
                     icon=ft.Icons.ADD,
                     tooltip="Aggiungi zona firma",
                     on_click=lambda _: self._invoke(self._on_add_signature_box),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE,
+                    tooltip="Rimuovi zona firma selezionata",
+                    on_click=lambda _: self._invoke(self._on_remove_signature_box),
                 ),
                 ft.VerticalDivider(width=12),
                 ft.IconButton(
@@ -921,7 +953,7 @@ class MainView:
         def logout(_: object) -> None:
             self._set_admin_mode(False)
             self._close_dialog()
-            self.show_status("modalitÃ  operatore attiva")
+            self.show_status("modalità operatore attiva")
 
         def unlock(_: object) -> None:
             if first_setup:
@@ -1009,6 +1041,10 @@ class MainView:
                 "Modalità amministratore attiva"
                 if enabled
                 else "Sblocca impostazioni amministratore"
+            )
+        if self._preferences_menu_button is not None:
+            self._preferences_menu_button.controls = self._build_preferences_menu_items(
+                180
             )
         self._page.update()
 
@@ -1277,6 +1313,13 @@ class MainView:
                             expand=True,
                             spacing=0,
                             padding=0,
+                            scroll=ft.Scrollbar(
+                                thumb_visibility=True,
+                                track_visibility=True,
+                                thickness=14,
+                                radius=8,
+                                interactive=True,
+                            ),
                         ),
                         expand=True,
                         clip_behavior=ft.ClipBehavior.HARD_EDGE,
@@ -1798,6 +1841,43 @@ class MainView:
         self._active_dialog = dialog
         self._page.show_dialog(dialog)
 
+    def ask_incomplete_signature_boxes(
+        self,
+        missing_count: int,
+        on_sign_missing: Callable[[], None],
+        on_save_anyway: Callable[[], None],
+        on_cancel: Callable[[], None],
+    ) -> None:
+        ft = self._ft
+        zone_label = "zona firma non compilata" if missing_count == 1 else "zone firma non compilate"
+
+        def sign_missing(_: object) -> None:
+            self._close_dialog()
+            on_sign_missing()
+
+        def save_anyway(_: object) -> None:
+            self._close_dialog()
+            on_save_anyway()
+
+        def cancel(_: object) -> None:
+            self._close_dialog()
+            on_cancel()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Zone firma incomplete"),
+            content=ft.Text(
+                f"Ci sono {missing_count} {zone_label}. "
+                "Vuoi salvare e inviare comunque il documento?"
+            ),
+            actions=[
+                ft.TextButton("Annulla", on_click=cancel),
+                ft.TextButton("Firma le zone mancanti", on_click=sign_missing),
+                ft.FilledButton("Invia comunque", on_click=save_anyway),
+            ],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
     def ask_close_application(
         self,
         on_confirm: Callable[[], None],
@@ -1830,6 +1910,7 @@ class MainView:
         on_clear: Callable[[], None] | None = None,
         on_cancel: Callable[[], None] | None = None,
         *,
+        on_remove_signature_box: Callable[[], None] | None = None,
         canvas_width: float | None = None,
         canvas_height: float | None = None,
     ) -> None:
@@ -1862,6 +1943,11 @@ class MainView:
             self._close_dialog()
             on_confirm(CapturedSignature(content=content, media_type="image/svg+xml"))
 
+        def remove_signature_box(_: object) -> None:
+            self._close_dialog()
+            if on_remove_signature_box is not None:
+                on_remove_signature_box()
+
         signature_pad = ft.GestureDetector(
             content=ft.Container(
                 content=self._signature_canvas,
@@ -1882,14 +1968,20 @@ class MainView:
             on_tap_down=self._start_signature_stroke,
             on_tap_up=self._finish_signature_stroke,
         )
+        actions = [
+            ft.TextButton("Cancella", on_click=clear),
+            ft.TextButton("Annulla", on_click=cancel),
+        ]
+        if on_remove_signature_box is not None:
+            actions.append(
+                ft.TextButton("Rimuovi zona", on_click=remove_signature_box)
+            )
+        actions.append(ft.TextButton("Conferma", on_click=confirm))
+
         dialog = ft.AlertDialog(
             title=ft.Text("Firma"),
             content=signature_pad,
-            actions=[
-                ft.TextButton("Cancella", on_click=clear),
-                ft.TextButton("Annulla", on_click=cancel),
-                ft.TextButton("Conferma", on_click=confirm),
-            ],
+            actions=actions,
         )
         self._active_dialog = dialog
         self._page.show_dialog(dialog)
@@ -2188,6 +2280,13 @@ class MainView:
         )
         self._active_dialog = dialog
         self._page.show_dialog(dialog)
+
+    def open_qsign_logs_folder(self) -> None:
+        if not self._admin_mode:
+            self.show_error("Operazione riservata all'amministratore")
+            return
+        self._close_dialog()
+        self._open_qsign_log_folder()
 
     def show_general_preferences(self) -> None:
         ft = self._ft
@@ -3543,6 +3642,14 @@ class MainView:
             key=lambda path: path.stat().st_ctime,
             reverse=True,
         )
+
+    def _resolved_log_file_path(self) -> Path:
+        if self._log_file_path.is_absolute():
+            return self._log_file_path
+        return self._application_root() / self._log_file_path
+
+    def _open_qsign_log_folder(self) -> None:
+        self._open_url(self._resolved_log_file_path().parent.resolve().as_uri())
 
     def _local_learned_templates(self) -> list[Path]:
         template_root = self._learned_template_directory

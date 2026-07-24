@@ -138,6 +138,7 @@ class QSignApplication:
             on_save_signed_pdf=controller.save_signed_pdf,
             on_manual_signature_rect=controller.set_manual_signature_rectangle,
             on_add_signature_box=controller.add_signature_box,
+            on_remove_signature_box=controller.remove_selected_signature_box,
             on_signature_area_click=controller.open_signature_dialog,
         )
         self._logger.info("QSign view initialized")
