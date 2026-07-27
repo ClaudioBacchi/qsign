@@ -192,6 +192,8 @@ class MainView:
         )
         self._cleanup_orphaned_erp_temp_files()
         self._window_icon_configured = False
+        self._active_navigation_item = "documents"
+        self._navigation_buttons: dict[str, object] = {}
         self._signature_strokes: list[list[tuple[float, float]]] = []
         self._current_signature_stroke: list[tuple[float, float]] | None = None
         self._signature_pad_width = DEFAULT_SIGNATURE_VIEWBOX_WIDTH
@@ -346,6 +348,18 @@ class MainView:
             bgcolor=ft.Colors.GREY_200,
         )
         self._show_local_home_placeholder(update=False)
+        main_area = ft.Container(
+            content=ft.Row(
+                controls=[
+                    self._build_navigation_rail(),
+                    viewer,
+                ],
+                expand=True,
+                spacing=0,
+            ),
+            expand=True,
+            bgcolor=ft.Colors.GREY_200,
+        )
         status_bar = ft.Container(
             content=ft.Row(
                 controls=[
@@ -363,13 +377,151 @@ class MainView:
             ft.Column(
                 controls=[
                     ft.Container(content=toolbar, padding=10),
-                    viewer,
+                    main_area,
                     status_bar,
                 ],
                 expand=True,
                 spacing=0,
             )
         )
+
+    def _build_navigation_rail(self) -> object:
+        ft = self._ft
+        self._navigation_buttons = {}
+        items = [
+            (
+                "documents",
+                ft.Icons.DESCRIPTION_OUTLINED,
+                "Documenti",
+                lambda _: self.show_documents_home(),
+                True,
+            ),
+            (
+                "signed",
+                ft.Icons.ARCHIVE_OUTLINED,
+                "Firmati",
+                lambda _: self.show_signed_history(),
+                True,
+            ),
+            (
+                "templates",
+                ft.Icons.ARTICLE_OUTLINED,
+                "Template",
+                lambda _: self.show_template_history(),
+                True,
+            ),
+            (
+                "preferences",
+                ft.Icons.SETTINGS_OUTLINED,
+                "Impostazioni",
+                lambda _: self.show_general_preferences(),
+                True,
+            ),
+            (
+                "logs",
+                ft.Icons.LIST_ALT_OUTLINED,
+                "Log",
+                lambda _: self.open_qsign_logs_folder(),
+                True,
+            ),
+        ]
+        return ft.Container(
+            width=132,
+            bgcolor=ft.Colors.WHITE,
+            padding=ft.Padding(left=8, top=12, right=8, bottom=12),
+            content=ft.Column(
+                controls=[
+                    self._build_navigation_button(item_id, icon, label, on_click)
+                    for item_id, icon, label, on_click, visible in items
+                    if visible
+                ],
+                spacing=6,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def _build_navigation_button(
+        self,
+        item_id: str,
+        icon: object,
+        label: str,
+        on_click: Callable[[object], None],
+    ) -> object:
+        ft = self._ft
+        is_active = item_id == self._active_navigation_item
+        button = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=3,
+                        height=40,
+                        border_radius=3,
+                        bgcolor=(
+                            ft.Colors.BLUE_700
+                            if is_active
+                            else ft.Colors.TRANSPARENT
+                        ),
+                    ),
+                    ft.Icon(
+                        icon,
+                        size=20,
+                        color=ft.Colors.BLUE_700 if is_active else ft.Colors.GREY_900,
+                    ),
+                    ft.Text(
+                        label,
+                        size=12,
+                        no_wrap=True,
+                        expand=True,
+                        color=ft.Colors.BLUE_700 if is_active else ft.Colors.GREY_900,
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            width=116,
+            height=48,
+            padding=ft.Padding(left=0, top=4, right=6, bottom=4),
+            border_radius=8,
+            bgcolor=(
+                ft.Colors.with_opacity(0.10, ft.Colors.BLUE_700)
+                if is_active
+                else ft.Colors.WHITE
+            ),
+            on_click=on_click,
+            ink=True,
+            tooltip=label,
+        )
+        self._navigation_buttons[item_id] = button
+        return button
+
+    def _set_active_navigation_item(self, item_id: str) -> None:
+        self._active_navigation_item = item_id
+        for key, button in self._navigation_buttons.items():
+            is_active = key == item_id
+            button.bgcolor = (
+                self._ft.Colors.with_opacity(0.10, self._ft.Colors.BLUE_700)
+                if is_active
+                else self._ft.Colors.WHITE
+            )
+            content = button.content
+            accent = content.controls[0]
+            icon = content.controls[1]
+            label = content.controls[2]
+            color = self._ft.Colors.BLUE_700 if is_active else self._ft.Colors.GREY_900
+            accent.bgcolor = self._ft.Colors.BLUE_700 if is_active else self._ft.Colors.TRANSPARENT
+            icon.color = color
+            label.color = color
+            self._update_control(button)
+
+    def show_documents_home(self) -> None:
+        self._close_dialog()
+        self._set_active_navigation_item("documents")
+        if self._document_viewer.visible:
+            return
+        if self._erp_document_list_enabled():
+            if self.refresh_erp_documents():
+                return
+        self._show_local_home_placeholder()
 
     def start_erp_auto_refresh(self) -> None:
         if (
@@ -676,10 +828,11 @@ class MainView:
                     tooltip="Zoom +",
                     on_click=lambda _: self._invoke(self._on_zoom_in),
                 ),
+                ft.VerticalDivider(width=12),
                 self._security_button,
                 ft.Container(expand=True),
             ],
-            spacing=2,
+            spacing=4,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
@@ -1089,6 +1242,7 @@ class MainView:
             self._preferences_menu_button.controls = self._build_preferences_menu_items(
                 180
             )
+        self._set_active_navigation_item(self._active_navigation_item)
         self._page.update()
 
     def show_startup_user_confirmation(self) -> bool:
@@ -2268,6 +2422,7 @@ class MainView:
 
     def show_signed_history(self) -> None:
         ft = self._ft
+        self._set_active_navigation_item("signed")
         self._close_dialog()
         documents = self._signed_history_documents()
         search = ft.TextField(
@@ -2463,6 +2618,7 @@ class MainView:
         if not self._admin_mode:
             self.show_error("Operazione riservata all'amministratore")
             return
+        self._set_active_navigation_item("logs")
         self._close_dialog()
         self._open_qsign_log_folder()
 
@@ -2471,6 +2627,7 @@ class MainView:
         if self._general_preferences_service is None:
             self.show_error("Preferenze generali non disponibili")
             return
+        self._set_active_navigation_item("preferences")
         settings = self._general_preferences_service.get_supabase_settings()
         supabase_url = ft.TextField(
             label="URL progetto Supabase",
@@ -2752,6 +2909,7 @@ class MainView:
         if self._general_preferences_service is None:
             self.show_error("Preferenze utenti non disponibili")
             return
+        self._set_active_navigation_item("preferences")
         settings = self._general_preferences_service.get_erp_user_settings()
         self._sync_erp_user_generation_from_settings(settings)
         users_url = ft.TextField(
@@ -3084,6 +3242,7 @@ class MainView:
 
     def show_template_history(self, result_message: str = "") -> None:
         ft = self._ft
+        self._set_active_navigation_item("templates")
         self._close_dialog()
         result_text = ft.Text(result_message)
 
@@ -3360,6 +3519,7 @@ class MainView:
         if self._certificate_service is None:
             self.show_error("Gestione certificati non disponibile")
             return
+        self._set_active_navigation_item("preferences")
         self._close_dialog()
         try:
             certificate = self._certificate_service.get_active_certificate()

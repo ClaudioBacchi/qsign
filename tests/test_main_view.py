@@ -1165,8 +1165,8 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(menu_bar.controls[1].controls[2].width, 180)
 
         icon_toolbar = toolbar.controls[1]
-        self.assertEqual(icon_toolbar.controls[12], view._security_button)
-        self.assertTrue(getattr(icon_toolbar.controls[13], "expand", False))
+        self.assertEqual(icon_toolbar.controls[13], view._security_button)
+        self.assertTrue(getattr(icon_toolbar.controls[14], "expand", False))
         tooltips = [
             getattr(control, "tooltip", None)
             for control in icon_toolbar.controls
@@ -1188,6 +1188,78 @@ class MainViewTests(unittest.TestCase):
                 "Sblocca impostazioni amministratore",
             ],
         )
+
+    def test_navigation_rail_shows_primary_sections_and_tracks_active_item(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        view = MainView(page, general_preferences_service=service)
+
+        view.build()
+
+        main_area = page.controls[0].controls[1]
+        navigation = main_area.content.controls[0].content
+        labels = [
+            button.content.controls[2].value
+            for button in navigation.controls
+        ]
+        self.assertEqual(
+            labels,
+            ["Documenti", "Firmati", "Template", "Impostazioni", "Log"],
+        )
+        self.assertEqual(view._active_navigation_item, "documents")
+        self.assertEqual(
+            view._navigation_buttons["documents"].bgcolor,
+            view._ft.Colors.with_opacity(0.10, view._ft.Colors.BLUE_700),
+        )
+        self.assertEqual(main_area.content.controls[0].width, 132)
+        self.assertEqual(view._navigation_buttons["documents"].width, 116)
+        self.assertTrue(view._navigation_buttons["documents"].content.controls[2].expand)
+        self.assertEqual(
+            view._navigation_buttons["documents"].content.controls[0].bgcolor,
+            view._ft.Colors.BLUE_700,
+        )
+
+        view._navigation_buttons["signed"].on_click(None)
+
+        self.assertEqual(view._active_navigation_item, "signed")
+        self.assertEqual(
+            view._navigation_buttons["documents"].content.controls[0].bgcolor,
+            view._ft.Colors.TRANSPARENT,
+        )
+        self.assertEqual(
+            view._navigation_buttons["signed"].content.controls[0].bgcolor,
+            view._ft.Colors.BLUE_700,
+        )
+        self.assertEqual(page.dialog.title.value, "Storico documenti firmati")
+
+        view._navigation_buttons["templates"].on_click(None)
+
+        self.assertEqual(view._active_navigation_item, "templates")
+        self.assertEqual(page.dialog.title.value, "Template Documenti")
+
+        view._navigation_buttons["preferences"].on_click(None)
+
+        self.assertEqual(view._active_navigation_item, "preferences")
+        self.assertEqual(page.dialog.title.value, "Impostazioni")
+
+    def test_navigation_log_requires_admin_mode(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        view.build()
+
+        view._navigation_buttons["logs"].on_click(None)
+
+        self.assertEqual(view._active_navigation_item, "documents")
+        self.assertEqual(
+            view._document_status.value,
+            "Stato: errore — Operazione riservata all'amministratore",
+        )
+
+        view._set_admin_mode(True)
+        view._navigation_buttons["logs"].on_click(None)
+
+        self.assertEqual(view._active_navigation_item, "logs")
+        self.assertTrue(page.launched_urls)
 
     def test_preferences_menu_shows_logs_only_for_admin(self) -> None:
         page = FakePage()
