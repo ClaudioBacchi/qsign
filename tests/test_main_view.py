@@ -182,9 +182,15 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(service.erp_document_fetch_settings.selected_user_id, "20")
         content_column = view._home_view.content.content
         self.assertEqual(content_column.controls[0].controls[0].value, "Documenti ERP da firmare")
-        table = content_column.controls[1].content.controls[0]
-        self.assertTrue(content_column.controls[1].expand)
-        self.assertTrue(content_column.controls[1].content.expand)
+        summary = content_column.controls[1]
+        table = content_column.controls[2].content.controls[0]
+        self.assertEqual(summary.controls[0].content.controls[1].controls[0].value, "1")
+        self.assertEqual(summary.controls[0].content.controls[1].controls[1].value, "In coda")
+        self.assertEqual(summary.height, 56)
+        self.assertEqual(summary.controls[0].width, 132)
+        self.assertEqual(summary.controls[0].height, 48)
+        self.assertTrue(content_column.controls[2].expand)
+        self.assertTrue(content_column.controls[2].content.expand)
         self.assertEqual(
             [column.label.value for column in table.columns],
             ["Nome documento", "Data"],
@@ -216,7 +222,7 @@ class MainViewTests(unittest.TestCase):
         view.refresh_erp_documents()
 
         content_column = view._home_view.content.content
-        table = content_column.controls[1].content.controls[0]
+        table = content_column.controls[2].content.controls[0]
         refresh_button = content_column.controls[0].controls[2]
         open_button = _find_button(table, "Apri")
 
@@ -351,7 +357,7 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(len(background_jobs), 2)
         background_jobs[1]()
         ui_jobs[1]()
-        table = view._home_view.content.content.controls[1].content.controls[0]
+        table = view._home_view.content.content.controls[2].content.controls[0]
         self.assertEqual(table.rows[0].cells[0].content.value, "B.pdf")
 
     def test_erp_documents_error_restores_retry_button(self) -> None:
@@ -424,7 +430,7 @@ class MainViewTests(unittest.TestCase):
         view.run_ui_task = lambda callback: callback()
 
         view.refresh_erp_documents()
-        table = view._home_view.content.content.controls[1].content.controls[0]
+        table = view._home_view.content.content.controls[2].content.controls[0]
         _find_button(table, "Apri").on_click(None)
 
         self.assertEqual(len(opened_documents), 1)
@@ -546,13 +552,13 @@ class MainViewTests(unittest.TestCase):
 
         view.refresh_erp_documents()
         toolbar = page.controls[0].controls[0].content
-        table = view._home_view.content.content.controls[1].content.controls[0]
+        table = view._home_view.content.content.controls[2].content.controls[0]
         _find_button(table, "Apri").on_click(None)
 
         self.assertEqual(opened_paths, [])
         self.assertTrue(view._home_view.visible)
         self.assertEqual(
-            view._home_view.content.content.controls[2].value,
+            view._home_view.content.content.controls[3].value,
             "Download documento ERP fallito",
         )
         self.assertEqual(toolbar.controls[1].controls[0].tooltip, "Apri")
@@ -594,13 +600,13 @@ class MainViewTests(unittest.TestCase):
 
         view.refresh_erp_documents()
         view.run_background_task = lambda callback: background_jobs.append(callback)
-        table = view._home_view.content.content.controls[1].content.controls[0]
+        table = view._home_view.content.content.controls[2].content.controls[0]
         open_button = _find_button(table, "Apri")
         open_button.on_click(None)
         open_button.on_click(None)
 
         self.assertEqual(
-            view._home_view.content.content.controls[2].color,
+            view._home_view.content.content.controls[3].color,
             view._ft.Colors.RED_700,
         )
         self.assertEqual(len(background_jobs), 1)
@@ -632,7 +638,7 @@ class MainViewTests(unittest.TestCase):
         view.run_background_task = lambda callback: background_jobs.append(callback)
         view.run_ui_task = lambda callback: self.fail("UI task should not be queued")
 
-        table = view._home_view.content.content.controls[1].content.controls[0]
+        table = view._home_view.content.content.controls[2].content.controls[0]
         _find_button(table, "Apri").on_click(None)
         view.stop_background_tasks()
         page.updated = False
@@ -668,7 +674,7 @@ class MainViewTests(unittest.TestCase):
 
         view.refresh_erp_documents()
         view.run_ui_task = lambda callback: ui_jobs.append(callback)
-        table = view._home_view.content.content.controls[1].content.controls[0]
+        table = view._home_view.content.content.controls[2].content.controls[0]
         _find_button(table, "Apri").on_click(None)
         temp_path = next(iter(view._erp_temp_files))
         view.stop_background_tasks()
@@ -705,7 +711,7 @@ class MainViewTests(unittest.TestCase):
 
         view.refresh_erp_documents()
         view.run_ui_task = lambda callback: ui_jobs.append(callback)
-        table = view._home_view.content.content.controls[1].content.controls[0]
+        table = view._home_view.content.content.controls[2].content.controls[0]
         _find_button(table, "Apri").on_click(None)
         temp_path = next(iter(view._erp_temp_files))
         service.erp_settings = ErpUserSettings(
@@ -722,7 +728,7 @@ class MainViewTests(unittest.TestCase):
         self.assertFalse(temp_path.exists())
         self.assertEqual(opened_paths, [])
         self.assertEqual(
-            view._home_view.content.content.controls[2].value,
+            view._home_view.content.content.controls[3].value,
             "Utente ERP cambiato: seleziona nuovamente il documento",
         )
 
@@ -750,7 +756,7 @@ class MainViewTests(unittest.TestCase):
 
         view.refresh_erp_documents()
         view.run_ui_task = lambda callback: ui_jobs.append(callback)
-        table = view._home_view.content.content.controls[1].content.controls[0]
+        table = view._home_view.content.content.controls[2].content.controls[0]
         _find_button(table, "Apri").on_click(None)
         ui_jobs[0]()
 
@@ -808,7 +814,7 @@ class MainViewTests(unittest.TestCase):
         view.run_ui_task = lambda callback: callback()
 
         view.refresh_erp_documents()
-        table = view._home_view.content.content.controls[1].content.controls[0]
+        table = view._home_view.content.content.controls[2].content.controls[0]
 
         self.assertEqual([column.label.value for column in table.columns], ["Nome documento", "Data"])
         self.assertEqual(client.calls, [])
@@ -833,7 +839,7 @@ class MainViewTests(unittest.TestCase):
 
         content_column = view._home_view.content.content
         self.assertEqual(
-            content_column.controls[1].content.value,
+            content_column.controls[2].content.value,
             "Nessun documento da firmare",
         )
 
@@ -1024,14 +1030,22 @@ class MainViewTests(unittest.TestCase):
         view.show_document_flow_uploaded("privacy_ROSSI.pdf")
 
         content = view._home_view.content
-        header = content.content.controls[0]
+        summary = content.content.controls[0]
         flow_list = content.content.controls[1].content
         table = flow_list.controls[0]
         rows = table.rows
+        tile_row = summary.controls[0]
 
-        self.assertEqual(header.controls[0].value, "Flussi documenti")
-        self.assertEqual(header.controls[2].semantics_label, "QSign")
-        self.assertEqual(header.controls[2].width, 170)
+        self.assertEqual(summary.controls[2].semantics_label, "QSign")
+        self.assertEqual(summary.controls[2].width, 170)
+        self.assertEqual(tile_row.controls[0].content.controls[1].controls[0].value, "1")
+        self.assertEqual(tile_row.controls[1].content.controls[1].controls[0].value, "1")
+        self.assertEqual(tile_row.controls[2].content.controls[1].controls[0].value, "1")
+        self.assertEqual(tile_row.controls[3].content.controls[1].controls[0].value, "0")
+        self.assertEqual(summary.height, 56)
+        self.assertTrue(all(tile.width == 132 for tile in tile_row.controls))
+        self.assertTrue(all(tile.height == 48 for tile in tile_row.controls))
+        self.assertEqual(table.heading_row_color, view._ft.Colors.WHITE)
         self.assertTrue(flow_list.scroll.thumb_visibility)
         self.assertTrue(flow_list.scroll.track_visibility)
         self.assertEqual(flow_list.scroll.thickness, 14)
@@ -2196,6 +2210,36 @@ class MainViewTests(unittest.TestCase):
 
         self.assertEqual(view._active_user.value, "Utente: Mario Rossi")
 
+    def test_status_bar_styles_operational_feedback(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.show_status("salvataggio PDF firmato in corso")
+
+        self.assertEqual(
+            view._document_status.value,
+            "Stato: salvataggio PDF firmato in corso",
+        )
+        self.assertEqual(view._status_icon.name, view._ft.Icons.HOURGLASS_EMPTY)
+        self.assertEqual(view._status_icon.color, view._ft.Colors.BLUE_700)
+        self.assertEqual(view._document_status.color, view._ft.Colors.BLUE_700)
+
+        view.show_status("PDF firmato salvato: output.pdf")
+
+        self.assertEqual(view._status_icon.name, view._ft.Icons.SAVE_OUTLINED)
+        self.assertEqual(view._status_icon.color, view._ft.Colors.GREEN_700)
+        self.assertEqual(view._document_status.color, view._ft.Colors.GREEN_700)
+
+        view.show_status("firma Wacom: firma sulla tavoletta")
+
+        self.assertEqual(view._status_icon.name, view._ft.Icons.EDIT_OUTLINED)
+        self.assertEqual(view._status_icon.color, view._ft.Colors.AMBER_800)
+
+        view.show_status("errore - salvataggio fallito")
+
+        self.assertEqual(view._status_icon.name, view._ft.Icons.ERROR_OUTLINE)
+        self.assertEqual(view._status_icon.color, view._ft.Colors.RED_700)
+
     def test_general_preferences_save_and_test_supabase_settings(self) -> None:
         page = FakePage()
         service = FakeGeneralPreferencesService()
@@ -3104,7 +3148,10 @@ def _erp_refresh_button(view: MainView) -> object:
 
 
 def _erp_documents_body(view: MainView) -> object:
-    return view._home_view.content.content.controls[1].content
+    controls = view._home_view.content.content.controls
+    if hasattr(controls[1], "content"):
+        return controls[1].content
+    return controls[2].content
 
 
 def _valid_pdf_bytes() -> bytes:

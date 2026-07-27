@@ -221,6 +221,18 @@ class MainView:
         self._zoom = ft.Text("Zoom: 100%")
         self._active_user = ft.Text(self._active_user_status_text())
         self._document_status = ft.Text(self._certificate_status_text())
+        self._status_icon = ft.Icon(ft.Icons.INFO_OUTLINE, size=16)
+        self._status_indicator = ft.Container(
+            content=ft.Row(
+                controls=[self._status_icon, self._document_status],
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                tight=True,
+            ),
+            padding=ft.Padding(left=10, top=5, right=10, bottom=5),
+            border_radius=8,
+        )
+        self._apply_status_style(self._document_status.value)
         self._viewer_placeholder = ft.GestureDetector(
             content=ft.Container(
                 content=ft.Image(
@@ -341,7 +353,7 @@ class MainView:
                     self._page_count,
                     self._zoom,
                     self._active_user,
-                    self._document_status,
+                    self._status_indicator,
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
@@ -718,15 +730,46 @@ class MainView:
         self._document_name.value = filename
         self._page_count.value = f"Pagina {page_number} / {page_count}"
         self._zoom.value = f"Zoom: {zoom:.0%}"
-        self._document_status.value = workflow_status or self._anchor_status(
-            anchor_count=anchor_count,
-            selected_anchor=selected_anchor,
+        self._set_document_status(
+            workflow_status
+            or self._anchor_status(
+                anchor_count=anchor_count,
+                selected_anchor=selected_anchor,
+            )
         )
         self._page.update()
 
     def show_status(self, message: str) -> None:
-        self._document_status.value = f"Stato: {message}"
+        self._set_document_status(f"Stato: {message}")
         self._page.update()
+
+    def _set_document_status(self, value: str) -> None:
+        self._document_status.value = value
+        self._apply_status_style(value)
+
+    def _apply_status_style(self, value: str) -> None:
+        icon, color = self._status_style(value)
+        self._status_icon.name = icon
+        self._status_icon.color = color
+        self._document_status.color = color
+        self._status_indicator.bgcolor = self._ft.Colors.with_opacity(0.08, color)
+
+    def _status_style(self, value: str) -> tuple[object, str]:
+        text = value.lower()
+        ft = self._ft
+        if "errore" in text or "fallit" in text or "non disponibile" in text:
+            return ft.Icons.ERROR_OUTLINE, ft.Colors.RED_700
+        if "in corso" in text or "analisi" in text or "caricamento" in text:
+            return ft.Icons.HOURGLASS_EMPTY, ft.Colors.BLUE_700
+        if "salvato" in text:
+            return ft.Icons.SAVE_OUTLINED, ft.Colors.GREEN_700
+        if "inviato" in text or "invio" in text or "erp" in text:
+            return ft.Icons.CLOUD_UPLOAD_OUTLINED, ft.Colors.BLUE_700
+        if "firma" in text or "wacom" in text:
+            return ft.Icons.EDIT_OUTLINED, ft.Colors.AMBER_800
+        if "pronto" in text or "attiva" in text or "aperto" in text:
+            return ft.Icons.CHECK_CIRCLE_OUTLINE, ft.Colors.GREEN_700
+        return ft.Icons.INFO_OUTLINE, ft.Colors.BLUE_700
 
     def defer_signature_capture(self, callback: Callable[[], None]) -> None:
         async def delayed_capture() -> None:
@@ -764,7 +807,7 @@ class MainView:
         callback()
 
     def show_certificate_status(self) -> None:
-        self._document_status.value = self._certificate_status_text()
+        self._set_document_status(self._certificate_status_text())
         self._page.update()
 
     def show_active_user_status(self) -> None:
@@ -1229,6 +1272,7 @@ class MainView:
 
     def _build_document_flow_home(self) -> object:
         ft = self._ft
+        summary = self._document_flow_summary()
         rows = [
             ft.DataRow(
                 color=self._document_flow_row_color(event["status"]),
@@ -1265,10 +1309,34 @@ class MainView:
                 controls=[
                     ft.Row(
                         controls=[
-                            self._erp_home_text(
-                                "Flussi documenti",
-                                weight=ft.FontWeight.BOLD,
-                                size=18,
+                            ft.Row(
+                                controls=[
+                                    self._document_flow_summary_tile(
+                                        "Scaricati",
+                                        summary.get("Scaricato", 0),
+                                        ft.Icons.FILE_DOWNLOAD_OUTLINED,
+                                        ft.Colors.BLUE_700,
+                                    ),
+                                    self._document_flow_summary_tile(
+                                        "Firmati",
+                                        summary.get("Firmato", 0),
+                                        ft.Icons.DRAW_OUTLINED,
+                                        ft.Colors.AMBER_800,
+                                    ),
+                                    self._document_flow_summary_tile(
+                                        "Inviati",
+                                        summary.get("Caricato", 0),
+                                        ft.Icons.CLOUD_DONE_OUTLINED,
+                                        ft.Colors.GREEN_700,
+                                    ),
+                                    self._document_flow_summary_tile(
+                                        "Errori",
+                                        summary.get("Errore invio", 0),
+                                        ft.Icons.ERROR_OUTLINE,
+                                        ft.Colors.RED_700,
+                                    ),
+                                ],
+                                spacing=10,
                             ),
                             ft.Container(expand=True),
                             ft.Image(
@@ -1280,7 +1348,9 @@ class MainView:
                                 semantics_label="QSign",
                             ),
                         ],
-                        vertical_alignment=ft.CrossAxisAlignment.START,
+                        spacing=10,
+                        height=56,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     ft.Container(
                         content=ft.ListView(
@@ -1308,6 +1378,7 @@ class MainView:
                                     ],
                                     rows=rows,
                                     column_spacing=24,
+                                    heading_row_color=ft.Colors.WHITE,
                                 )
                             ],
                             expand=True,
@@ -1328,6 +1399,47 @@ class MainView:
                 spacing=12,
                 expand=True,
             ),
+        )
+
+    def _document_flow_summary(self) -> dict[str, int]:
+        summary: dict[str, int] = {}
+        for event in self._document_flow_events:
+            status = event.get("status", "")
+            summary[status] = summary.get(status, 0) + 1
+        return summary
+
+    def _document_flow_summary_tile(
+        self,
+        label: str,
+        count: int,
+        icon: object,
+        color: str,
+    ) -> object:
+        ft = self._ft
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(icon, color=color, size=18),
+                    ft.Column(
+                        controls=[
+                            self._erp_home_text(
+                                str(count),
+                                weight=ft.FontWeight.BOLD,
+                                size=16,
+                            ),
+                            self._erp_home_text(label, size=12),
+                        ],
+                        spacing=0,
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            bgcolor=ft.Colors.with_opacity(0.08, color),
+            border_radius=8,
+            padding=ft.Padding(left=10, top=6, right=10, bottom=6),
+            width=132,
+            height=48,
         )
 
     def _document_flow_row_color(self, status: str) -> str:
@@ -1428,6 +1540,13 @@ class MainView:
                 expand=True,
                 spacing=0,
                 padding=0,
+                scroll=ft.Scrollbar(
+                    thumb_visibility=True,
+                    track_visibility=True,
+                    thickness=14,
+                    radius=8,
+                    interactive=True,
+                ),
             )
         else:
             content = self._erp_home_text("Nessun documento da firmare")
@@ -1451,6 +1570,31 @@ class MainView:
                         ],
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
+                    ft.Row(
+                        controls=[
+                            self._erp_documents_summary_tile(
+                                "In coda",
+                                len(documents),
+                                ft.Icons.PENDING_ACTIONS_OUTLINED,
+                                ft.Colors.BLUE_700,
+                            ),
+                            self._erp_documents_summary_tile(
+                                "Apribili",
+                                sum(
+                                    1
+                                    for document in documents
+                                    if self._erp_document_has_download_keys(document)
+                                )
+                                if can_open_documents
+                                else 0,
+                                ft.Icons.FOLDER_OPEN_OUTLINED,
+                                ft.Colors.GREEN_700,
+                            ),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                        height=56,
+                    ),
                     ft.Container(
                         content=content,
                         expand=True,
@@ -1465,6 +1609,40 @@ class MainView:
         self._viewer_placeholder.visible = False
         if self._home_view.visible:
             self._page.update()
+
+    def _erp_documents_summary_tile(
+        self,
+        label: str,
+        count: int,
+        icon: object,
+        color: str,
+    ) -> object:
+        ft = self._ft
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(icon, color=color, size=18),
+                    ft.Column(
+                        controls=[
+                            self._erp_home_text(
+                                str(count),
+                                weight=ft.FontWeight.BOLD,
+                                size=16,
+                            ),
+                            self._erp_home_text(label, size=12),
+                        ],
+                        spacing=0,
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            bgcolor=ft.Colors.with_opacity(0.08, color),
+            border_radius=8,
+            padding=ft.Padding(left=10, top=6, right=10, bottom=6),
+            width=132,
+            height=48,
+        )
 
     def _erp_document_download_configured(self, settings: ErpUserSettings) -> bool:
         return bool(
