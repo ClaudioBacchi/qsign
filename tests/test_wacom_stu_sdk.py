@@ -1,8 +1,13 @@
+import ctypes
 import unittest
+from unittest.mock import MagicMock
 
 from services.wacom.stu_sdk import (
     STUPenPoint,
     STUTabletInfo,
+    STUUsbDevice,
+    WacomSTUSDK,
+    WacomSTUSDKError,
     _draw_text,
     _pack_monochrome,
     _pen_point_to_screen,
@@ -75,6 +80,62 @@ class WacomSTUSDKHelperTests(unittest.TestCase):
         x, y = _pen_point_to_screen(STUPenPoint(4800, 3000, 1, True), self.info)
 
         self.assertEqual((x, y), (160, 100))
+
+    def test_capture_signature_does_not_double_release_attached_usb_interface(self) -> None:
+        sdk = WacomSTUSDK.__new__(WacomSTUSDK)
+        sdk._dll = MagicMock()
+        interface = ctypes.c_void_p(11)
+        tablet = ctypes.c_void_p(22)
+        device = STUUsbDevice(
+            vendor_id=0x056A,
+            product_id=0x00A4,
+            device_version=1,
+            file_name="usb",
+            bulk_file_name="bulk",
+        )
+        sdk._first_stu_device = MagicMock(return_value=device)
+        sdk._open_usb_interface = MagicMock(return_value=interface)
+        sdk._create_tablet = MagicMock(return_value=tablet)
+        sdk._read_attached_tablet_info = MagicMock(return_value=self.info)
+        sdk._call = MagicMock()
+        sdk._prepare_signature_screen = MagicMock()
+        sdk._capture_signature_from_tablet_buttons = MagicMock(
+            side_effect=WacomSTUSDKError("Firma annullata")
+        )
+        sdk._dll.WacomGSS_Tablet_interfaceQueue.return_value = 0
+
+        with self.assertRaises(WacomSTUSDKError):
+            sdk.capture_signature()
+
+        sdk._dll.WacomGSS_Tablet_disconnect.assert_called_once_with(tablet)
+        sdk._dll.WacomGSS_Tablet_free.assert_called_once_with(tablet)
+        sdk._dll.WacomGSS_Interface_disconnect.assert_not_called()
+        sdk._dll.WacomGSS_Interface_free.assert_not_called()
+
+    def test_capture_signature_releases_usb_interface_when_tablet_create_fails(
+        self,
+    ) -> None:
+        sdk = WacomSTUSDK.__new__(WacomSTUSDK)
+        sdk._dll = MagicMock()
+        interface = ctypes.c_void_p(11)
+        device = STUUsbDevice(
+            vendor_id=0x056A,
+            product_id=0x00A4,
+            device_version=1,
+            file_name="usb",
+            bulk_file_name="bulk",
+        )
+        sdk._first_stu_device = MagicMock(return_value=device)
+        sdk._open_usb_interface = MagicMock(return_value=interface)
+        sdk._create_tablet = MagicMock(
+            side_effect=WacomSTUSDKError("Tablet_attach failed with code 7")
+        )
+
+        with self.assertRaises(WacomSTUSDKError):
+            sdk.capture_signature()
+
+        sdk._dll.WacomGSS_Interface_disconnect.assert_called_once_with(interface)
+        sdk._dll.WacomGSS_Interface_free.assert_called_once_with(interface)
 
     def _point_at_screen(self, x: int, y: int) -> STUPenPoint:
         return STUPenPoint(

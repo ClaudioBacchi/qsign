@@ -26,7 +26,14 @@ class BuildReleaseVersionTests(unittest.TestCase):
             helper_path = Path(directory) / "version-test.ps1"
             helper_path.write_text(helper_script, encoding="utf-8")
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-File", str(helper_path)],
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(helper_path),
+                ],
                 cwd=project_root,
                 check=True,
                 capture_output=True,

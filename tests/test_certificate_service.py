@@ -268,7 +268,7 @@ class CertificateServiceTests(unittest.TestCase):
 
             def run(script: str) -> str:
                 scripts.append(script)
-                if "ReadOnly" in script:
+                if "ForEach-Object" in script:
                     return _certificates_payload()
                 return ""
 
@@ -282,6 +282,37 @@ class CertificateServiceTests(unittest.TestCase):
             self.assertEqual(certificate.thumbprint, "AABB")
             self.assertIn("$thumbprint = 'AABB'", scripts[1])
             self.assertIn("[System.IO.File]::WriteAllBytes", scripts[1])
+
+    def test_export_active_certificate_pfx_explains_non_exportable_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            preferences.write_text(
+                json.dumps({"active_certificate_thumbprint": "AA BB"}),
+                encoding="utf-8",
+            )
+            destination = Path(directory) / "active.pfx"
+
+            def run(script: str) -> str:
+                if "ForEach-Object" in script:
+                    return _certificates_payload()
+                raise CertificateServiceError(
+                    "Exception calling \"Export\" with \"2\" argument(s): "
+                    "\"Chiave non utilizzabile nello stato specificato.\""
+                )
+
+            service = CertificateService(
+                preferences_path=preferences,
+                command_runner=run,
+            )
+
+            with self.assertRaises(CertificateServiceError) as context:
+                service.export_active_certificate_pfx(destination, "secret")
+
+            self.assertIn(
+                "non consente l'esportazione della chiave privata",
+                str(context.exception),
+            )
+            self.assertIn("PFX esportabile", str(context.exception))
 
     def test_generate_self_signed_updates_active_thumbprint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

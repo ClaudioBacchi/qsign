@@ -826,6 +826,8 @@ class MainViewTests(unittest.TestCase):
             (),
         )
         view = MainView(page, general_preferences_service=service)
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
 
         view.refresh_erp_documents()
 
@@ -2479,6 +2481,8 @@ class MainViewTests(unittest.TestCase):
         service = FakeGeneralPreferencesService()
         view = MainView(page, general_preferences_service=service)
         view._admin_mode = True
+        view.run_background_task = lambda callback: callback()
+        view.run_ui_task = lambda callback: callback()
 
         view.show_user_preferences()
         layout = page.dialog.content.content.controls

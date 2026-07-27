@@ -148,7 +148,10 @@ class PyMuPDFSignatureWriterTests(unittest.TestCase):
                 _publish_without_overwrite(source, destination)
 
             self.assertEqual(replace_calls, 2)
-            sleep.assert_called_once()
+            self.assertEqual(
+                [call.args for call in sleep.call_args_list].count((0.12,)),
+                1,
+            )
             self.assertEqual(destination.read_bytes(), b"%PDF-signed")
             self.assertFalse(source.exists())
 

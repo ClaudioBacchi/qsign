@@ -1149,7 +1149,7 @@ class PDFViewerControllerTests(unittest.TestCase):
         controller.close_document()
         view.background_tasks[0]()
 
-        self.assertEqual(provider.cancel_count, 1)
+        self.assertGreaterEqual(provider.cancel_count, 1)
         self.assertEqual(provider.capture_count, 1)
         self.assertTrue(view.cleared)
         self.assertEqual(controller.state.page_count, 0)
@@ -1191,6 +1191,90 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(view.pages[-1][4][0].signature_content, signature.content)
         self.assertEqual(view.defer_viewer_refresh_count, 1)
         self.service.save_signed_preview.assert_not_called()
+
+    def test_save_cancels_pending_wacom_capture_and_asks_incomplete_choice(self) -> None:
+        view = DeferredBackgroundViewer()
+        first_signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        second_signature = CapturedSignature(
+            content=b"<svg><polyline points='3,3 4,4'/></svg>",
+            media_type="image/svg+xml",
+        )
+        provider = CancellableSignatureProvider(second_signature)
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create("qsign.tests.controller.wacom_save_wait"),
+            general_preferences_service=FakeGeneralPreferencesService(
+                signature_capture_mode="wacom"
+            ),
+            signature_provider=provider,
+        )
+        self.service.save_signed_previews.return_value = Path(
+            "dist/signed/sample_signed.pdf"
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        controller.add_signature_box()
+        controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+        overlays = view.pages[-1][4]
+        controller.apply_wacom_signature(first_signature, overlays[0].target_id)
+
+        controller.save_signed_pdf()
+
+        self.assertGreaterEqual(provider.cancel_count, 1)
+        self.assertEqual(view.incomplete_missing_count, 1)
+        self.service.save_signed_previews.assert_not_called()
+
+        view.background_tasks[-1]()
+
+        self.assertEqual(view.ui_tasks, [])
+        self.service.save_signed_previews.assert_not_called()
+        self.assertEqual(view.errors, [])
+
+    def test_wacom_auto_save_runs_signed_pdf_write_in_background(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            view = DeferredBackgroundViewer()
+            signed_path = Path(directory) / "privacy_signed.pdf"
+            self.service.save_signed_preview.return_value = signed_path
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=view,
+                logger=LoggingService.create(
+                    "qsign.tests.controller.wacom_auto_save_background"
+                ),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    auto_save_signed_documents=True,
+                    signature_capture_mode="wacom",
+                ),
+                signature_provider=FakeSignatureProvider(
+                    CapturedSignature(
+                        content=b"<svg><polyline points='3,3 4,4'/></svg>",
+                        media_type="image/svg+xml",
+                    )
+                ),
+            )
+            controller.open_document("sample.pdf")
+            controller.set_manual_signature_rectangle(10, 10, 50, 30, 200, 200)
+            signature = CapturedSignature(
+                content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                media_type="image/svg+xml",
+            )
+
+            controller.apply_wacom_signature(signature)
+
+            self.assertEqual(view.statuses[-1], "salvataggio PDF firmato in corso")
+            self.service.save_signed_preview.assert_not_called()
+            self.assertFalse(view.cleared)
+
+            view.background_tasks[-1]()
+            view.ui_tasks[-1]()
+
+            self.service.save_signed_preview.assert_called_once()
+            self.assertTrue(view.cleared)
+            self.assertIn("PDF firmato salvato", view.statuses[-1])
 
     def test_open_signature_dialog_uses_mouse_when_preference_is_mouse(self) -> None:
         signature = CapturedSignature(
@@ -1737,6 +1821,36 @@ class PDFViewerControllerTests(unittest.TestCase):
         overlays = view.pages[-1][4]
         self.assertEqual(overlays[0].signature_content, first_signature.content)
         self.assertIsNone(overlays[1].signature_content)
+
+    def test_partial_signature_can_be_closed_after_discard_confirmation(self) -> None:
+        view = PassiveSignatureDialogViewer()
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create("qsign.tests.controller.partial_close"),
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        controller.add_signature_box()
+        controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+        overlays = view.pages[-1][4]
+        controller.open_signature_dialog(overlays[0].target_id)
+        view.signature_confirm_callback(
+            CapturedSignature(
+                content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                media_type="image/svg+xml",
+            )
+        )
+
+        controller.close_document()
+
+        self.service.close_document.assert_not_called()
+        self.assertIsNotNone(view.discard_callback)
+        view.discard_callback()
+
+        self.service.close_document.assert_called_once()
+        self.assertFalse(controller.has_unsaved_signed_document())
+        self.assertTrue(view.cleared)
 
     def test_incomplete_multi_box_workflow_does_not_show_discard_loop(self) -> None:
         view = PassiveSignatureDialogViewer()

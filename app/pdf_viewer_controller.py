@@ -255,6 +255,8 @@ class PDFViewerController:
         self._has_unsaved_signature = False
         self._wacom_capture_cancel: threading.Event | None = None
         self._wacom_capture_generation = 0
+        self._wacom_capture_active = False
+        self._signed_pdf_save_active = False
         self.state = PDFViewerState()
 
     def open_document(
@@ -303,6 +305,8 @@ class PDFViewerController:
             self._erp_upload_context = None
             self._document_flow_name = ""
             self._has_unsaved_signature = False
+            self._wacom_capture_active = False
+            self._signed_pdf_save_active = False
             self._workflow_status = "Documento non aperto"
             self._view.clear_document()
             self._view.show_error(str(error))
@@ -333,6 +337,8 @@ class PDFViewerController:
             self._erp_upload_context = None
             self._document_flow_name = ""
             self._has_unsaved_signature = False
+            self._wacom_capture_active = False
+            self._signed_pdf_save_active = False
             self._workflow_status = "Apri un PDF"
             self._view.set_manual_signature_mode(False)
             self._view.clear_document()
@@ -357,6 +363,8 @@ class PDFViewerController:
         self._erp_upload_context = None
         self._document_flow_name = ""
         self._has_unsaved_signature = False
+        self._wacom_capture_active = False
+        self._signed_pdf_save_active = False
         self._workflow_status = "Apri un PDF"
 
     def previous_page(self) -> None:
@@ -894,6 +902,9 @@ class PDFViewerController:
         if self._signature_provider is None:
             self._view.show_error("Firma Wacom non disponibile")
             return
+        if self._wacom_capture_active:
+            self._view.show_status("firma Wacom gia in corso")
+            return
         target = self._selected_signature_target()
         if target is None:
             self._view.show_error("Nessun rettangolo firma disponibile")
@@ -903,6 +914,7 @@ class PDFViewerController:
         generation = self._wacom_capture_generation
         cancel_event = threading.Event()
         self._wacom_capture_cancel = cancel_event
+        self._wacom_capture_active = True
         self._view.show_status("firma Wacom: firma sulla tavoletta")
 
         def capture() -> None:
@@ -918,8 +930,9 @@ class PDFViewerController:
                     error=error_message,
                 )
                 self._view.run_ui_task(
-                    lambda: self._view.show_error(
-                        f"Firma Wacom non disponibile: {error_message}"
+                    lambda: self._finish_wacom_capture_with_error(
+                        generation,
+                        f"Firma Wacom non disponibile: {error_message}",
                     )
                 )
                 return
@@ -927,13 +940,18 @@ class PDFViewerController:
                 self._logger.info("Ignoring cancelled Wacom signature capture")
                 return
             self._view.run_ui_task(
-                lambda: self.apply_wacom_signature(signature, target_id)
+                lambda: self._finish_wacom_capture_with_signature(
+                    signature,
+                    target_id,
+                    generation,
+                )
             )
 
         self._view.run_background_task(capture)
 
     def _cancel_wacom_capture(self) -> None:
         self._wacom_capture_generation += 1
+        self._wacom_capture_active = False
         if self._wacom_capture_cancel is not None:
             self._wacom_capture_cancel.set()
         cancel = getattr(self._signature_provider, "cancel_signature_capture", None)
@@ -945,6 +963,30 @@ class PDFViewerController:
                     "Unable to cancel Wacom signature capture",
                     error=str(error),
                 )
+
+    def _finish_wacom_capture_if_current(self, generation: int) -> bool:
+        if generation != self._wacom_capture_generation:
+            return False
+        self._wacom_capture_active = False
+        self._wacom_capture_cancel = None
+        return True
+
+    def _finish_wacom_capture_with_error(
+        self, generation: int, message: str
+    ) -> None:
+        if not self._finish_wacom_capture_if_current(generation):
+            return
+        self._view.show_error(message)
+
+    def _finish_wacom_capture_with_signature(
+        self,
+        signature: CapturedSignature,
+        target_id: str | None,
+        generation: int,
+    ) -> None:
+        if not self._finish_wacom_capture_if_current(generation):
+            return
+        self.apply_wacom_signature(signature, target_id)
 
     def log_mouse_signature_clear(self) -> None:
         self._logger.info("Mouse signature cleared")
@@ -1031,6 +1073,11 @@ class PDFViewerController:
         if document is None:
             self._view.show_error("Nessun PDF aperto")
             return
+        if self._wacom_capture_active:
+            self._cancel_wacom_capture()
+        if self._signed_pdf_save_active:
+            self._view.show_status("salvataggio PDF firmato in corso")
+            return
         flow_document_name = (
             self._document_flow_name
             or self._document_flow_name_for_document(document, self._erp_upload_context)
@@ -1090,22 +1137,49 @@ class PDFViewerController:
             for target in signed_targets
             if target.signature is not None
         )
-        try:
-            if len(signatures) == 1:
-                destination = self._pdf_service.save_signed_preview(
-                    signatures[0][0],
-                    signatures[0][1],
-                )
-            else:
-                destination = self._pdf_service.save_signed_previews(signatures)
-        except Exception as error:
-            self._logger.exception("Unable to save signed PDF preview")
-            self._has_unsaved_signature = True
-            self._render_current_page()
-            self._view.show_error(str(error))
-            return
 
         erp_upload_context = self._erp_upload_context
+        self._signed_pdf_save_active = True
+        self._view.show_status("salvataggio PDF firmato in corso")
+
+        def save() -> None:
+            try:
+                if len(signatures) == 1:
+                    destination = self._pdf_service.save_signed_preview(
+                        signatures[0][0],
+                        signatures[0][1],
+                    )
+                else:
+                    destination = self._pdf_service.save_signed_previews(signatures)
+            except Exception as error:
+                self._logger.exception("Unable to save signed PDF preview")
+                self._view.run_ui_task(
+                    lambda error=error: self._finish_signed_pdf_save_with_error(error)
+                )
+                return
+            self._view.run_ui_task(
+                lambda: self._finish_signed_pdf_save(
+                    Path(destination),
+                    erp_upload_context,
+                    flow_document_name,
+                )
+            )
+
+        self._view.run_background_task(save)
+
+    def _finish_signed_pdf_save_with_error(self, error: Exception) -> None:
+        self._signed_pdf_save_active = False
+        self._has_unsaved_signature = True
+        self._render_current_page()
+        self._view.show_error(str(error))
+
+    def _finish_signed_pdf_save(
+        self,
+        destination: Path,
+        erp_upload_context: ErpSignedDocumentUploadContext | None,
+        flow_document_name: str,
+    ) -> None:
+        self._signed_pdf_save_active = False
         self._workflow_status = f"PDF firmato salvato: {destination}"
         self._has_unsaved_signature = False
         self._logger.info("Signed PDF saved", destination=str(destination))
@@ -1125,6 +1199,8 @@ class PDFViewerController:
         self._pending_manual_rectangle_restore = None
         self._erp_upload_context = None
         self._document_flow_name = ""
+        self._wacom_capture_active = False
+        self._signed_pdf_save_active = False
         self._view.set_manual_signature_mode(False)
         self._view.clear_document()
         self._view.show_document_flow_signed(flow_document_name)

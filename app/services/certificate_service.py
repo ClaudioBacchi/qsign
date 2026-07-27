@@ -220,7 +220,17 @@ finally {
 }
 """
         )
-        self._command_runner(script)
+        try:
+            self._command_runner(script)
+        except CertificateServiceError as error:
+            message = str(error)
+            if self._is_non_exportable_private_key_error(message):
+                raise CertificateServiceError(
+                    "Il certificato selezionato non consente l'esportazione della "
+                    "chiave privata. Importa o seleziona un certificato PFX "
+                    "esportabile, oppure genera un certificato da QSign."
+                ) from error
+            raise
         return certificate
 
     def generate_self_signed(
@@ -449,6 +459,15 @@ if ($null -eq $selected) {
                 message or "Operazione certificato non riuscita"
             )
         return completed.stdout
+
+    @staticmethod
+    def _is_non_exportable_private_key_error(message: str) -> bool:
+        normalized = message.lower()
+        return (
+            "chiave non utilizzabile nello stato specificato" in normalized
+            or "key not valid for use in specified state" in normalized
+            or "notspecified" in normalized
+        )
 
     @staticmethod
     def _certificate_from_payload(payload: Any) -> CertificateInfo:

@@ -488,9 +488,12 @@ class WacomSTUSDK:
         del quiet_seconds
         selected_device = device or self._first_stu_device()
         interface = self._open_usb_interface(selected_device)
-        tablet = self._create_tablet(interface)
+        tablet = ctypes.c_void_p()
         queue = ctypes.c_void_p()
+        interface_attached_to_tablet = False
         try:
+            tablet = self._create_tablet(interface)
+            interface_attached_to_tablet = True
             result = self._dll.WacomGSS_Tablet_interfaceQueue(
                 tablet, ctypes.byref(queue)
             )
@@ -506,12 +509,17 @@ class WacomSTUSDK:
                 tablet, queue, info, layout, max_seconds, cancel_event
             )
         finally:
-            self._dll.WacomGSS_Tablet_setInkingMode(tablet, 0)
-            self._dll.WacomGSS_Tablet_setClearScreen(tablet)
+            if tablet:
+                self._dll.WacomGSS_Tablet_setInkingMode(tablet, 0)
+                self._dll.WacomGSS_Tablet_setClearScreen(tablet)
             if queue:
                 self._dll.WacomGSS_InterfaceQueue_free(queue)
-            self._dll.WacomGSS_Tablet_disconnect(tablet)
-            self._dll.WacomGSS_Tablet_free(tablet)
+            if tablet:
+                self._dll.WacomGSS_Tablet_disconnect(tablet)
+                self._dll.WacomGSS_Tablet_free(tablet)
+            if not interface_attached_to_tablet:
+                self._dll.WacomGSS_Interface_disconnect(interface)
+                self._dll.WacomGSS_Interface_free(interface)
 
     def _prepare_signature_screen(
         self, tablet: ctypes.c_void_p, info: STUTabletInfo, layout: _TabletLayout

@@ -1,9 +1,23 @@
 """Tests for QSign application composition helpers."""
 
+import os
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
-from app.main import _prepare_flet_window
+from app.main import (
+    _prepare_flet_runtime_metadata,
+    _prepare_flet_window,
+    _prepare_qsign_flet_runtime,
+    _read_app_version,
+    _safe_runtime_directory_name,
+    _version_tuple,
+    _windows_icon_resources,
+    _windows_version_resource,
+)
 from app.qsign_application import QSignApplication
 
 
@@ -15,6 +29,110 @@ class QSignApplicationTests(unittest.TestCase):
 
         self.assertEqual(page.title, "qSign by Queen Srl - queensrl.net")
         self.assertFalse(page.window.maximized)
+
+    def test_read_app_version_from_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_dir = root / "config"
+            config_dir.mkdir()
+            (config_dir / "app.yaml").write_text(
+                'name: QSign\nversion: "1.2.3"\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_read_app_version(root), "1.2.3")
+
+    def test_windows_version_resource_contains_qsign_metadata(self) -> None:
+        resource = _windows_version_resource(
+            version="1.2.3",
+            strings={
+                "FileDescription": "QSign",
+                "ProductName": "QSign",
+                "CompanyName": "Queen Srl",
+            },
+        )
+
+        self.assertEqual(_version_tuple("1.2.3"), (1, 2, 3, 0))
+        self.assertIn("QSign".encode("utf-16le"), resource)
+        self.assertIn("Queen Srl".encode("utf-16le"), resource)
+
+    def test_windows_icon_resources_convert_ico_to_executable_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            icon_path = Path(temp_dir) / "icon.ico"
+            image = b"\x89PNG\r\n\x1a\nfake"
+            icon_path.write_bytes(
+                b"\x00\x00\x01\x00\x01\x00"
+                + b"\x10\x10\x00\x00\x01\x00 \x00"
+                + len(image).to_bytes(4, "little")
+                + (22).to_bytes(4, "little")
+                + image
+            )
+
+            resources = _windows_icon_resources(icon_path)
+
+        self.assertIsNotNone(resources)
+        assert resources is not None
+        self.assertEqual(resources.icons, [(1, image)])
+        self.assertEqual(resources.group[:6], b"\x00\x00\x01\x00\x01\x00")
+        self.assertEqual(resources.group[-2:], b"\x01\x00")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows-only Flet runtime setup")
+    def test_prepare_flet_runtime_metadata_sets_qsign_flet_view_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir) / "cache"
+            flet_dir = cache_dir / "flet"
+            flet_dir.mkdir(parents=True)
+            flet_exe = flet_dir / "flet.exe"
+            flet_exe.write_bytes(b"fake exe")
+            icon_path = Path(temp_dir) / "resources" / "icons" / "favicon.ico"
+            icon_path.parent.mkdir(parents=True)
+            icon_path.write_bytes(b"icon")
+            fake_flet_desktop = Mock()
+            fake_flet_desktop.ensure_client_cached.return_value = str(cache_dir)
+
+            with (
+                patch.dict(sys.modules, {"flet_desktop": fake_flet_desktop}),
+                patch.dict(os.environ, {}, clear=False),
+                patch(
+                    "app.main._qsign_flet_runtime_root",
+                    return_value=Path(temp_dir) / "qsign-runtime",
+                ),
+                patch("app.main._set_windows_executable_metadata") as set_metadata,
+            ):
+                _prepare_flet_runtime_metadata(Path(temp_dir))
+                runtime_name = _safe_runtime_directory_name(cache_dir.name, "0.0.0")
+                expected_flet_dir = (
+                    Path(temp_dir) / "qsign-runtime" / runtime_name / "flet"
+                )
+                self.assertEqual(os.environ["FLET_VIEW_PATH"], str(expected_flet_dir))
+
+        set_metadata.assert_called_once_with(
+            expected_flet_dir / "flet.exe", version="0.0.0", icon_path=icon_path
+        )
+
+    def test_prepare_qsign_flet_runtime_copies_source_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_flet_dir = root / "flet-cache" / "flet"
+            source_flet_dir.mkdir(parents=True)
+            (source_flet_dir / "flet.exe").write_bytes(b"runtime")
+            (source_flet_dir / "icudtl.dat").write_bytes(b"data")
+
+            with patch(
+                "app.main._qsign_flet_runtime_root",
+                return_value=root / "qsign-runtime",
+            ):
+                copied_flet_dir = _prepare_qsign_flet_runtime(
+                    root / "flet-cache", "1.2.3"
+                )
+                copied_again = _prepare_qsign_flet_runtime(
+                    root / "flet-cache", "1.2.3"
+                )
+
+            self.assertEqual(copied_flet_dir, copied_again)
+            self.assertNotEqual(copied_flet_dir, source_flet_dir)
+            self.assertEqual((copied_flet_dir / "flet.exe").read_bytes(), b"runtime")
+            self.assertEqual((copied_flet_dir / "icudtl.dat").read_bytes(), b"data")
 
     def test_set_window_visible_updates_flet_window_when_available(self) -> None:
         page = FakePage()
