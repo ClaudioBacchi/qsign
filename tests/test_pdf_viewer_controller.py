@@ -1639,11 +1639,33 @@ class PDFViewerControllerTests(unittest.TestCase):
                 infinity_dms_client=dms_client,
             )
 
-            controller.retry_pending_erp_uploads(directory)
+            queued = controller.retry_pending_erp_uploads(directory)
 
+            self.assertEqual(queued, 1)
             self.assertEqual(len(dms_client.uploads), 1)
             self.assertEqual(dms_client.uploads[0]["content"], b"%PDF-signed-content")
             self.assertFalse(sidecar.exists())
+
+    def test_retry_pending_erp_uploads_reports_zero_without_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.erp_pending_empty"),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    erp_settings=ErpUserSettings(
+                        document_service_url="https://erp.example.test/soap",
+                        company_id="SALAV",
+                        basic_username="api-user",
+                        basic_password="api-secret",
+                    )
+                ),
+                infinity_dms_client=FakeInfinityDmsClient(),
+            )
+
+            queued = controller.retry_pending_erp_uploads(directory)
+
+            self.assertEqual(queued, 0)
 
     def test_unsigned_save_prompt_blocks_page_change_after_signature(self) -> None:
         self.controller.open_document("sample.pdf")

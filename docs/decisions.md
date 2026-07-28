@@ -152,3 +152,75 @@ this milestone.
   behavior.
 - Schema design, migration, backup, recovery, locking, and encryption policy
   remain mandatory work for the future implementation milestone.
+
+## ADR-006 - Evaluate `flet build` for Windows packaging
+
+**Status:** Proposed
+
+**Release:** Distribution milestone, no runtime release
+
+### Context
+
+QSign currently packages the desktop app with PyInstaller, embeds a cached Flet
+desktop runtime archive, and patches the copied `flet.exe` metadata/icon at
+startup. This keeps releases working, but it also leaves application identity
+split across PyInstaller, Inno Setup, the copied Flet runtime, and Windows
+resource patching code.
+
+Recent UI work exposed the same class of problem from the user side: the app
+should own its shell, icon, title, metadata, and packaging output directly
+instead of correcting a generic runtime after launch.
+
+The current Flet documentation describes `flet build` as the modern packaging
+path for standalone executables or installable bundles. The archived
+PyInstaller packaging page explicitly points to `flet build` as the better
+desktop packaging path and notes that it no longer relies on PyInstaller.
+
+### Decision
+
+Keep the current PyInstaller/Inno Setup release pipeline until there is a
+validated replacement, but stop adding new packaging-specific patches around
+`flet.exe` unless they fix a blocking production defect.
+
+Plan a controlled evaluation of:
+
+- `flet build windows` for the Windows desktop artifact;
+- `[tool.flet]` and `[tool.flet.windows]` metadata in `pyproject.toml`;
+- Flet asset-based icon handling from an `assets` directory;
+- whether the current Inno installer remains useful as a thin installer around
+  the Flet-produced Windows output;
+- removal of `_prepare_flet_runtime_metadata`,
+  `_prepare_qsign_flet_runtime`, `_set_windows_executable_metadata`, and the
+  window-icon patch only after the Flet build proves equivalent in smoke tests.
+
+### Acceptance Criteria
+
+- Build runs from a clean Windows workspace using the pinned Flet version.
+- Artifact has QSign product name, company, version, icon, and executable name.
+- App launches without a Python installation on the target machine.
+- Smoke path passes: startup, ERP user selection, PDF open, Wacom/mouse
+  signature capture, signed PDF save, ERP upload failure/success reporting, and
+  signed history.
+- Release output can still produce the portable package and installer expected
+  by operations.
+- PyInstaller-specific runtime patching code is removed only in the migration
+  commit that replaces the release pipeline.
+
+### Consequences
+
+- Distribution work gets a cleaner target instead of accumulating more
+  Windows-resource patching code.
+- The migration may require project layout changes because Flet's documented
+  minimal project layout uses a `src/assets` application structure.
+- Flutter/Visual Studio prerequisites become part of the release environment
+  if `flet build windows` is adopted.
+- Until the evaluation is complete, PyInstaller remains the supported release
+  path.
+
+### References
+
+- Flet Publishing: https://flet.dev/docs/publish/
+- Flet Windows packaging: https://flet.dev/docs/publish/windows/
+- Flet CLI `build`: https://flet.dev/docs/cli/flet-build/
+- Archived Flet PyInstaller packaging note:
+  https://flet.dev/docs/archive/packaging-desktop-app-with-pyinstaller/

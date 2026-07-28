@@ -247,6 +247,7 @@ class MainView:
         self._on_save_signed_pdf: Callable[[], None] | None = None
         self._on_add_signature_box: Callable[[], None] | None = None
         self._on_remove_signature_box: Callable[[], None] | None = None
+        self._on_retry_pending_erp_uploads: Callable[[], int] | None = None
         self._on_signature_area_click: Callable[[str | None], None] | None = None
         self._on_manual_signature_rect: (
             Callable[[float, float, float, float, float, float], None] | None
@@ -401,6 +402,7 @@ class MainView:
         ) = None,
         on_add_signature_box: Callable[[], None] | None = None,
         on_remove_signature_box: Callable[[], None] | None = None,
+        on_retry_pending_erp_uploads: Callable[[], int] | None = None,
         on_signature_area_click: Callable[[str | None], None] | None = None,
     ) -> None:
         """Bind controller actions without exposing Flet outside the view."""
@@ -414,6 +416,7 @@ class MainView:
         self._on_manual_signature_rect = on_manual_signature_rect
         self._on_add_signature_box = on_add_signature_box
         self._on_remove_signature_box = on_remove_signature_box
+        self._on_retry_pending_erp_uploads = on_retry_pending_erp_uploads
         self._on_signature_area_click = on_signature_area_click
 
     def build(self) -> None:
@@ -1710,6 +1713,16 @@ class MainView:
                                 spacing=10,
                             ),
                             ft.Container(expand=True),
+                            *(
+                                [
+                                    self._erp_home_button(
+                                        "Ritenta invio",
+                                        on_click=lambda _: self._retry_pending_erp_uploads(),
+                                    )
+                                ]
+                                if self._on_retry_pending_erp_uploads is not None
+                                else []
+                            ),
                             ft.Image(
                                 src=self._image_data_uri(
                                     "images/logo_qsign_grande.png"
@@ -1821,6 +1834,20 @@ class MainView:
             "Errore invio": self._ft.Colors.with_opacity(0.18, self._ft.Colors.RED),
         }
         return colors.get(status, self._ft.Colors.WHITE)
+
+    def _retry_pending_erp_uploads(self) -> None:
+        if self._on_retry_pending_erp_uploads is None:
+            self.show_status("retry invio ERP non disponibile")
+            return
+        try:
+            queued = self._on_retry_pending_erp_uploads()
+        except Exception as error:
+            self.show_error(f"retry invio ERP fallito: {error}")
+            return
+        if queued:
+            self.show_status(f"retry invio ERP avviato: {queued} documenti")
+        else:
+            self.show_status("nessun invio ERP fallito da ritentare")
 
     def _erp_home_text(self, value: str, **kwargs: object) -> object:
         kwargs.setdefault("color", self._ft.Colors.GREY_900)

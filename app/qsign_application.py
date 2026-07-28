@@ -139,6 +139,10 @@ class QSignApplication:
             on_manual_signature_rect=controller.set_manual_signature_rectangle,
             on_add_signature_box=controller.add_signature_box,
             on_remove_signature_box=controller.remove_selected_signature_box,
+            on_retry_pending_erp_uploads=lambda: (
+                controller.retry_pending_erp_uploads()
+                + controller.retry_pending_erp_uploads("dist/signed")
+            ),
             on_signature_area_click=controller.open_signature_dialog,
         )
         self._logger.info("QSign view initialized")

@@ -1023,21 +1023,38 @@ class MainViewTests(unittest.TestCase):
     def test_document_flow_grid_tracks_daily_document_steps(self) -> None:
         page = FakePage()
         flow_log = FakeDocumentFlowLogService()
+        retries: list[str] = []
         view = MainView(page, document_flow_log_service=flow_log)
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+            on_retry_pending_erp_uploads=lambda: retries.append("retry") or 2,
+        )
 
         view.show_document_flow_downloaded("privacy_ROSSI.pdf")
         view.show_document_flow_signed("privacy_ROSSI.pdf")
         view.show_document_flow_uploaded("privacy_ROSSI.pdf")
 
         content = view._home_view.content
+        retry_button = _find_button(content, "Ritenta invio")
+        retry_button.on_click(None)
         summary = content.content.controls[0]
         flow_list = content.content.controls[1].content
         table = flow_list.controls[0]
         rows = table.rows
         tile_row = summary.controls[0]
 
-        self.assertEqual(summary.controls[2].semantics_label, "QSign")
-        self.assertEqual(summary.controls[2].width, 170)
+        self.assertEqual(summary.controls[3].semantics_label, "QSign")
+        self.assertEqual(summary.controls[3].width, 170)
+        self.assertEqual(retries, ["retry"])
+        self.assertEqual(
+            view._document_status.value,
+            "Stato: retry invio ERP avviato: 2 documenti",
+        )
         self.assertEqual(tile_row.controls[0].content.controls[1].controls[0].value, "1")
         self.assertEqual(tile_row.controls[1].content.controls[1].controls[0].value, "1")
         self.assertEqual(tile_row.controls[2].content.controls[1].controls[0].value, "1")
@@ -1068,6 +1085,29 @@ class MainViewTests(unittest.TestCase):
         )
         self.assertIsNone(rows[0].cells[0].content.bgcolor)
         self.assertTrue(all(row.cells[0].content.content.color for row in rows))
+
+    def test_document_flow_retry_reports_no_pending_erp_uploads(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+            on_retry_pending_erp_uploads=lambda: 0,
+        )
+
+        view.show_document_flow_upload_failed("privacy_ROSSI.pdf")
+
+        retry_button = _find_button(view._home_view.content, "Ritenta invio")
+        retry_button.on_click(None)
+
+        self.assertEqual(
+            view._document_status.value,
+            "Stato: nessun invio ERP fallito da ritentare",
+        )
         self.assertFalse(view._viewer_placeholder.visible)
 
     def test_document_flow_grid_loads_today_events_from_log(self) -> None:

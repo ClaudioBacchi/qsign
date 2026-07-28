@@ -1253,12 +1253,13 @@ class PDFViewerController:
     def retry_pending_erp_uploads(
         self,
         directory: str | Path = Path("documenti_firmati"),
-    ) -> None:
+    ) -> int:
         upload_directory = Path(directory)
         if self._general_preferences_service is None or self._infinity_dms_client is None:
-            return
+            return 0
         if not upload_directory.is_dir():
-            return
+            return 0
+        queued = 0
         for sidecar in sorted(upload_directory.glob("*.pdf.erp-upload.json")):
             pending = self._read_pending_erp_upload(sidecar)
             if pending is None:
@@ -1281,6 +1282,8 @@ class PDFViewerController:
                 self._upload_signed_pdf_to_erp(path, upload_context, document_name)
 
             self._view.run_background_task(upload)
+            queued += 1
+        return queued
 
     def _write_pending_erp_upload(
         self,

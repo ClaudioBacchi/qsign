@@ -9,6 +9,9 @@
 7. PAdES Signing with Windows Certificates
 8. Complete Workflow
 9. Distribution and Automatic Updates
+   - Evaluate migration from PyInstaller/manual Flet runtime patching to
+     `flet build windows` before adding further `flet.exe` shell/metadata
+     workarounds.
 
 Each milestone must select technology only for its own scope and preserve the
 provider-neutral contracts established by the platform.
