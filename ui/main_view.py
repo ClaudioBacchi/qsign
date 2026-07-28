@@ -102,11 +102,98 @@ class AnchorOverlayViewModel(Protocol):
     target_id: str | None
 
 
+class QSignTheme:
+    """Central visual tokens for the QSign Flet shell."""
+
+    FONT_FAMILY = "Segoe UI"
+    RADIUS_SM = 3
+    RADIUS_MD = 8
+    SPACE_XS = 4
+    SPACE_SM = 6
+    SPACE_MD = 8
+    SPACE_LG = 10
+    SPACE_XL = 12
+    SPACE_XXL = 24
+    NAVIGATION_WIDTH = 132
+    NAVIGATION_BUTTON_WIDTH = 116
+    NAVIGATION_BUTTON_HEIGHT = 48
+
+    @staticmethod
+    def configure_page(ft: object, page: object) -> None:
+        page.theme = ft.Theme(
+            use_material3=True,
+            font_family=QSignTheme.FONT_FAMILY,
+            color_scheme_seed=ft.Colors.BLUE_700,
+            color_scheme=ft.ColorScheme(
+                primary=ft.Colors.BLUE_700,
+                secondary=ft.Colors.RED_700,
+                tertiary=ft.Colors.GREEN_700,
+                surface=ft.Colors.WHITE,
+                surface_container_lowest=ft.Colors.WHITE,
+                surface_container=ft.Colors.GREY_50,
+                surface_container_high=ft.Colors.GREY_100,
+                on_surface=ft.Colors.GREY_900,
+                on_surface_variant=ft.Colors.GREY_700,
+                outline=ft.Colors.GREY_400,
+                error=ft.Colors.RED_700,
+            ),
+            scaffold_bgcolor=ft.Colors.GREY_50,
+            canvas_color=ft.Colors.WHITE,
+            card_bgcolor=ft.Colors.WHITE,
+            divider_color=ft.Colors.GREY_300,
+        )
+        page.dark_theme = ft.Theme(
+            use_material3=True,
+            font_family=QSignTheme.FONT_FAMILY,
+            color_scheme_seed=ft.Colors.BLUE_700,
+            color_scheme=ft.ColorScheme(
+                primary=ft.Colors.BLUE_300,
+                secondary=ft.Colors.RED_300,
+                tertiary=ft.Colors.GREEN_300,
+                surface=ft.Colors.GREY_900,
+                surface_container_lowest=ft.Colors.BLACK,
+                surface_container=ft.Colors.GREY_900,
+                surface_container_high=ft.Colors.GREY_800,
+                on_surface=ft.Colors.GREY_100,
+                on_surface_variant=ft.Colors.GREY_300,
+                outline=ft.Colors.GREY_700,
+                error=ft.Colors.RED_300,
+            ),
+            scaffold_bgcolor=ft.Colors.BLACK,
+            canvas_color=ft.Colors.GREY_900,
+            card_bgcolor=ft.Colors.GREY_900,
+            divider_color=ft.Colors.GREY_800,
+        )
+        page.theme_mode = ft.ThemeMode.LIGHT
+
+    @staticmethod
+    def primary(ft: object) -> str:
+        return ft.Colors.BLUE_700
+
+    @staticmethod
+    def primary_text(ft: object) -> str:
+        return ft.Colors.GREY_900
+
+    @staticmethod
+    def muted_text(ft: object) -> str:
+        return ft.Colors.GREY_700
+
+    @staticmethod
+    def surface(ft: object) -> str:
+        return ft.Colors.WHITE
+
+    @staticmethod
+    def app_background(ft: object) -> str:
+        return ft.Colors.GREY_200
+
+
 class MainView:
     """Build controls and expose presentation-only updates."""
 
     APP_TITLE = "qSign by Queen Srl - queensrl.net"
     _MOUSE_WHEEL_PAGE_THRESHOLD = 40.0
+    _MINIMUM_ZOOM = 0.25
+    _MAXIMUM_ZOOM = 4.0
 
     def __init__(
         self,
@@ -172,6 +259,7 @@ class MainView:
         self._admin_mode = False
         self._security_button: object | None = None
         self._preferences_menu_button: object | None = None
+        self._document_action_controls: dict[str, list[object]] = {}
         self._erp_auto_refresh_stop = threading.Event()
         self._erp_auto_refresh_thread: threading.Thread | None = None
         self._erp_auto_refresh_lock = threading.Lock()
@@ -227,12 +315,12 @@ class MainView:
         self._status_indicator = ft.Container(
             content=ft.Row(
                 controls=[self._status_icon, self._document_status],
-                spacing=6,
+                spacing=QSignTheme.SPACE_SM,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 tight=True,
             ),
             padding=ft.Padding(left=10, top=5, right=10, bottom=5),
-            border_radius=8,
+            border_radius=QSignTheme.RADIUS_MD,
         )
         self._apply_status_style(self._document_status.value)
         self._viewer_placeholder = ft.GestureDetector(
@@ -253,7 +341,7 @@ class MainView:
             content=self._viewer_placeholder,
             alignment=ft.Alignment(0, 0),
             expand=True,
-            bgcolor=ft.Colors.WHITE,
+            bgcolor=QSignTheme.surface(ft),
         )
         self._pdf_image = ft.Image(
             src="data:image/png;base64,"
@@ -334,6 +422,7 @@ class MainView:
         self._page.padding = 0
         self._page.services.append(self._file_picker)
         self._page.services.append(self._pfx_file_picker)
+        self._document_action_controls = {}
         toolbar = ft.Column(
             controls=[
                 self._build_menu_bar(),
@@ -345,7 +434,7 @@ class MainView:
         viewer = ft.Container(
             content=self._viewer_layers,
             expand=True,
-            bgcolor=ft.Colors.GREY_200,
+            bgcolor=QSignTheme.app_background(ft),
         )
         self._show_local_home_placeholder(update=False)
         main_area = ft.Container(
@@ -358,7 +447,7 @@ class MainView:
                 spacing=0,
             ),
             expand=True,
-            bgcolor=ft.Colors.GREY_200,
+            bgcolor=QSignTheme.app_background(ft),
         )
         status_bar = ft.Container(
             content=ft.Row(
@@ -371,12 +460,13 @@ class MainView:
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
-            padding=10,
+            padding=QSignTheme.SPACE_LG,
         )
+        self._set_document_actions_enabled(False, update=False)
         self._page.add(
             ft.Column(
                 controls=[
-                    ft.Container(content=toolbar, padding=10),
+                    ft.Container(content=toolbar, padding=QSignTheme.SPACE_LG),
                     main_area,
                     status_bar,
                 ],
@@ -426,8 +516,8 @@ class MainView:
             ),
         ]
         return ft.Container(
-            width=132,
-            bgcolor=ft.Colors.WHITE,
+            width=QSignTheme.NAVIGATION_WIDTH,
+            bgcolor=QSignTheme.surface(ft),
             padding=ft.Padding(left=8, top=12, right=8, bottom=12),
             content=ft.Column(
                 controls=[
@@ -435,7 +525,7 @@ class MainView:
                     for item_id, icon, label, on_click, visible in items
                     if visible
                 ],
-                spacing=6,
+                spacing=QSignTheme.SPACE_SM,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
@@ -455,9 +545,9 @@ class MainView:
                     ft.Container(
                         width=3,
                         height=40,
-                        border_radius=3,
+                        border_radius=QSignTheme.RADIUS_SM,
                         bgcolor=(
-                            ft.Colors.BLUE_700
+                            QSignTheme.primary(ft)
                             if is_active
                             else ft.Colors.TRANSPARENT
                         ),
@@ -465,27 +555,35 @@ class MainView:
                     ft.Icon(
                         icon,
                         size=20,
-                        color=ft.Colors.BLUE_700 if is_active else ft.Colors.GREY_900,
+                        color=(
+                            QSignTheme.primary(ft)
+                            if is_active
+                            else QSignTheme.primary_text(ft)
+                        ),
                     ),
                     ft.Text(
                         label,
                         size=12,
                         no_wrap=True,
                         expand=True,
-                        color=ft.Colors.BLUE_700 if is_active else ft.Colors.GREY_900,
+                        color=(
+                            QSignTheme.primary(ft)
+                            if is_active
+                            else QSignTheme.primary_text(ft)
+                        ),
                     ),
                 ],
-                spacing=8,
+                spacing=QSignTheme.SPACE_MD,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            width=116,
-            height=48,
+            width=QSignTheme.NAVIGATION_BUTTON_WIDTH,
+            height=QSignTheme.NAVIGATION_BUTTON_HEIGHT,
             padding=ft.Padding(left=0, top=4, right=6, bottom=4),
-            border_radius=8,
+            border_radius=QSignTheme.RADIUS_MD,
             bgcolor=(
-                ft.Colors.with_opacity(0.10, ft.Colors.BLUE_700)
+                ft.Colors.with_opacity(0.10, QSignTheme.primary(ft))
                 if is_active
-                else ft.Colors.WHITE
+                else QSignTheme.surface(ft)
             ),
             on_click=on_click,
             ink=True,
@@ -499,16 +597,27 @@ class MainView:
         for key, button in self._navigation_buttons.items():
             is_active = key == item_id
             button.bgcolor = (
-                self._ft.Colors.with_opacity(0.10, self._ft.Colors.BLUE_700)
+                self._ft.Colors.with_opacity(
+                    0.10,
+                    QSignTheme.primary(self._ft),
+                )
                 if is_active
-                else self._ft.Colors.WHITE
+                else QSignTheme.surface(self._ft)
             )
             content = button.content
             accent = content.controls[0]
             icon = content.controls[1]
             label = content.controls[2]
-            color = self._ft.Colors.BLUE_700 if is_active else self._ft.Colors.GREY_900
-            accent.bgcolor = self._ft.Colors.BLUE_700 if is_active else self._ft.Colors.TRANSPARENT
+            color = (
+                QSignTheme.primary(self._ft)
+                if is_active
+                else QSignTheme.primary_text(self._ft)
+            )
+            accent.bgcolor = (
+                QSignTheme.primary(self._ft)
+                if is_active
+                else self._ft.Colors.TRANSPARENT
+            )
             icon.color = color
             label.color = color
             self._update_control(button)
@@ -610,6 +719,7 @@ class MainView:
         return True
 
     def prepare_window_shell(self) -> None:
+        QSignTheme.configure_page(self._ft, self._page)
         self._page.title = self.APP_TITLE
         self._configure_window_icon()
 
@@ -689,15 +799,23 @@ class MainView:
                             width=menu_item_width,
                             on_click=self._pick_pdf,
                         ),
-                        ft.MenuItemButton(
-                            content=ft.Text("Chiudi"),
-                            width=menu_item_width,
-                            on_click=lambda _: self._invoke(self._on_close),
+                        self._register_document_action(
+                            "close",
+                            ft.MenuItemButton(
+                                content=ft.Text("Chiudi"),
+                                width=menu_item_width,
+                                on_click=lambda _: self._invoke(self._on_close),
+                            ),
                         ),
-                        ft.MenuItemButton(
-                            content=ft.Text("Salva"),
-                            width=menu_item_width,
-                            on_click=lambda _: self._invoke(self._on_save_signed_pdf),
+                        self._register_document_action(
+                            "save",
+                            ft.MenuItemButton(
+                                content=ft.Text("Salva"),
+                                width=menu_item_width,
+                                on_click=lambda _: self._invoke(
+                                    self._on_save_signed_pdf
+                                ),
+                            ),
                         ),
                         ft.MenuItemButton(
                             content=ft.Text("Storico"),
@@ -709,18 +827,24 @@ class MainView:
                             width=menu_item_width,
                             on_click=lambda _: self.show_template_history(),
                         ),
-                        ft.MenuItemButton(
-                            content=ft.Text("Aggiungi zona firma"),
-                            width=menu_item_width,
-                            on_click=lambda _: self._invoke(
-                                self._on_add_signature_box
+                        self._register_document_action(
+                            "add_signature_box",
+                            ft.MenuItemButton(
+                                content=ft.Text("Aggiungi zona firma"),
+                                width=menu_item_width,
+                                on_click=lambda _: self._invoke(
+                                    self._on_add_signature_box
+                                ),
                             ),
                         ),
-                        ft.MenuItemButton(
-                            content=ft.Text("Rimuovi zona firma"),
-                            width=menu_item_width,
-                            on_click=lambda _: self._invoke(
-                                self._on_remove_signature_box
+                        self._register_document_action(
+                            "remove_signature_box",
+                            ft.MenuItemButton(
+                                content=ft.Text("Rimuovi zona firma"),
+                                width=menu_item_width,
+                                on_click=lambda _: self._invoke(
+                                    self._on_remove_signature_box
+                                ),
                             ),
                         ),
                     ],
@@ -763,6 +887,25 @@ class MainView:
             )
         return items
 
+    def _register_document_action(self, action_id: str, control: object) -> object:
+        self._document_action_controls.setdefault(action_id, []).append(control)
+        return control
+
+    def _set_document_actions_enabled(self, enabled: bool, *, update: bool) -> None:
+        for controls in self._document_action_controls.values():
+            for control in controls:
+                control.disabled = not enabled
+                if update:
+                    self._update_control(control)
+
+    def _set_document_action_enabled(
+        self, action_id: str, enabled: bool, *, update: bool
+    ) -> None:
+        for control in self._document_action_controls.get(action_id, []):
+            control.disabled = not enabled
+            if update:
+                self._update_control(control)
+
     def _build_icon_toolbar(self) -> object:
         ft = self._ft
         self._security_button = ft.IconButton(
@@ -781,52 +924,76 @@ class MainView:
                     tooltip="Apri",
                     on_click=self._pick_pdf,
                 ),
-                ft.IconButton(
-                    icon=ft.Icons.SAVE,
-                    tooltip="Salva",
-                    on_click=lambda _: self._invoke(self._on_save_signed_pdf),
+                self._register_document_action(
+                    "save",
+                    ft.IconButton(
+                        icon=ft.Icons.SAVE,
+                        tooltip="Salva",
+                        on_click=lambda _: self._invoke(self._on_save_signed_pdf),
+                    ),
                 ),
-                ft.IconButton(
-                    icon=ft.Icons.CLOSE,
-                    tooltip="Chiudi",
-                    on_click=lambda _: self._invoke(self._on_close),
+                self._register_document_action(
+                    "close",
+                    ft.IconButton(
+                        icon=ft.Icons.CLOSE,
+                        tooltip="Chiudi",
+                        on_click=lambda _: self._invoke(self._on_close),
+                    ),
                 ),
                 ft.IconButton(
                     icon=ft.Icons.ARCHIVE,
                     tooltip="Storico",
                     on_click=lambda _: self.show_signed_history(),
                 ),
-                ft.IconButton(
-                    icon=ft.Icons.ADD,
-                    tooltip="Aggiungi zona firma",
-                    on_click=lambda _: self._invoke(self._on_add_signature_box),
+                self._register_document_action(
+                    "add_signature_box",
+                    ft.IconButton(
+                        icon=ft.Icons.ADD,
+                        tooltip="Aggiungi zona firma",
+                        on_click=lambda _: self._invoke(self._on_add_signature_box),
+                    ),
                 ),
-                ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE,
-                    tooltip="Rimuovi zona firma selezionata",
-                    on_click=lambda _: self._invoke(self._on_remove_signature_box),
-                ),
-                ft.VerticalDivider(width=12),
-                ft.IconButton(
-                    icon=ft.Icons.CHEVRON_LEFT,
-                    tooltip="Pagina precedente",
-                    on_click=lambda _: self._invoke(self._on_previous),
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.CHEVRON_RIGHT,
-                    tooltip="Pagina successiva",
-                    on_click=lambda _: self._invoke(self._on_next),
+                self._register_document_action(
+                    "remove_signature_box",
+                    ft.IconButton(
+                        icon=ft.Icons.DELETE_OUTLINE,
+                        tooltip="Rimuovi zona firma selezionata",
+                        on_click=lambda _: self._invoke(self._on_remove_signature_box),
+                    ),
                 ),
                 ft.VerticalDivider(width=12),
-                ft.IconButton(
-                    icon=ft.Icons.ZOOM_OUT,
-                    tooltip="Zoom -",
-                    on_click=lambda _: self._invoke(self._on_zoom_out),
+                self._register_document_action(
+                    "previous_page",
+                    ft.IconButton(
+                        icon=ft.Icons.CHEVRON_LEFT,
+                        tooltip="Pagina precedente",
+                        on_click=lambda _: self._invoke(self._on_previous),
+                    ),
                 ),
-                ft.IconButton(
-                    icon=ft.Icons.ZOOM_IN,
-                    tooltip="Zoom +",
-                    on_click=lambda _: self._invoke(self._on_zoom_in),
+                self._register_document_action(
+                    "next_page",
+                    ft.IconButton(
+                        icon=ft.Icons.CHEVRON_RIGHT,
+                        tooltip="Pagina successiva",
+                        on_click=lambda _: self._invoke(self._on_next),
+                    ),
+                ),
+                ft.VerticalDivider(width=12),
+                self._register_document_action(
+                    "zoom_out",
+                    ft.IconButton(
+                        icon=ft.Icons.ZOOM_OUT,
+                        tooltip="Zoom -",
+                        on_click=lambda _: self._invoke(self._on_zoom_out),
+                    ),
+                ),
+                self._register_document_action(
+                    "zoom_in",
+                    ft.IconButton(
+                        icon=ft.Icons.ZOOM_IN,
+                        tooltip="Zoom +",
+                        on_click=lambda _: self._invoke(self._on_zoom_in),
+                    ),
                 ),
                 ft.VerticalDivider(width=12),
                 self._security_button,
@@ -883,6 +1050,27 @@ class MainView:
         self._document_name.value = filename
         self._page_count.value = f"Pagina {page_number} / {page_count}"
         self._zoom.value = f"Zoom: {zoom:.0%}"
+        self._set_document_actions_enabled(True, update=False)
+        self._set_document_action_enabled(
+            "previous_page",
+            page_number > 1,
+            update=False,
+        )
+        self._set_document_action_enabled(
+            "next_page",
+            page_number < page_count,
+            update=False,
+        )
+        self._set_document_action_enabled(
+            "zoom_out",
+            zoom > self._MINIMUM_ZOOM,
+            update=False,
+        )
+        self._set_document_action_enabled(
+            "zoom_in",
+            zoom < self._MAXIMUM_ZOOM,
+            update=False,
+        )
         self._set_document_status(
             workflow_status
             or self._anchor_status(
@@ -890,11 +1078,22 @@ class MainView:
                 selected_anchor=selected_anchor,
             )
         )
-        self._page.update()
+        self._update_controls(
+            self._viewer_layers,
+            self._pdf_stack,
+            self._document_name,
+            self._page_count,
+            self._zoom,
+            self._status_indicator,
+            *self._document_action_control_instances(),
+        )
 
     def show_status(self, message: str) -> None:
         self._set_document_status(f"Stato: {message}")
-        self._page.update()
+        self._update_control(self._status_indicator)
+
+    def set_save_action_enabled(self, enabled: bool) -> None:
+        self._set_document_action_enabled("save", enabled, update=True)
 
     def _set_document_status(self, value: str) -> None:
         self._document_status.value = value
@@ -947,21 +1146,32 @@ class MainView:
         callback()
 
     def run_background_task(self, callback: Callable[[], None]) -> None:
-        threading.Thread(target=callback, daemon=True).start()
+        run_thread = getattr(self._page, "run_thread", None)
+        if callable(run_thread):
+            run_thread(self._invoke_task_callback, callback)
+            return
+        threading.Thread(
+            target=self._invoke_task_callback,
+            args=(callback,),
+            daemon=True,
+        ).start()
 
     def run_ui_task(self, callback: Callable[[], None]) -> None:
         async def invoke() -> None:
-            callback()
+            result = callback()
+            if inspect.isawaitable(result):
+                await result
 
         run_task = getattr(self._page, "run_task", None)
         if callable(run_task):
             run_task(invoke)
             return
-        callback()
+        result = callback()
+        self._await_if_needed(result)
 
     def show_certificate_status(self) -> None:
         self._set_document_status(self._certificate_status_text())
-        self._page.update()
+        self._update_control(self._status_indicator)
 
     def show_active_user_status(self) -> None:
         if self._general_preferences_service is not None:
@@ -969,7 +1179,7 @@ class MainView:
                 self._general_preferences_service.get_erp_user_settings()
             )
         self._active_user.value = self._active_user_status_text()
-        self._page.update()
+        self._update_control(self._active_user)
 
     def refresh_erp_documents(self) -> bool:
         if self._closing.is_set():
@@ -1062,7 +1272,7 @@ class MainView:
         )
         self._viewer_placeholder.visible = False
         if self._home_view.visible:
-            self._page.update()
+            self._update_control(self._home_view)
 
     def _finish_erp_documents_refresh(
         self,
@@ -1243,7 +1453,14 @@ class MainView:
                 180
             )
         self._set_active_navigation_item(self._active_navigation_item)
-        self._page.update()
+        self._update_controls(
+            *(
+                control
+                for control in (self._security_button, self._preferences_menu_button)
+                if control is not None
+            ),
+            *self._navigation_buttons.values(),
+        )
 
     def show_startup_user_confirmation(self) -> bool:
         if self._general_preferences_service is None:
@@ -1353,7 +1570,7 @@ class MainView:
             self._home_view.content = self._viewer_placeholder
             self._viewer_placeholder.visible = True
         if update and self._home_view.visible:
-            self._page.update()
+            self._update_controls(self._viewer_layers, self._home_view)
 
     def show_document_flow_downloaded(self, document_name: str) -> None:
         self._add_document_flow_event(document_name, "Scaricato")
@@ -1382,7 +1599,7 @@ class MainView:
         del self._document_flow_events[80:]
         if self._home_view.visible and not self._document_viewer.visible:
             self._show_local_home_placeholder(update=False)
-            self._page.update()
+            self._update_controls(self._viewer_layers, self._home_view)
 
     def _load_document_flow_events_for_today(self) -> list[dict[str, str]]:
         if self._document_flow_log_service is None:
@@ -1762,7 +1979,7 @@ class MainView:
         )
         self._viewer_placeholder.visible = False
         if self._home_view.visible:
-            self._page.update()
+            self._update_control(self._home_view)
 
     def _erp_documents_summary_tile(
         self,
@@ -2088,7 +2305,7 @@ class MainView:
         )
         self._viewer_placeholder.visible = False
         if self._home_view.visible:
-            self._page.update()
+            self._update_control(self._home_view)
 
     def clear_document(self) -> None:
         self._pdf_image.visible = False
@@ -2104,8 +2321,19 @@ class MainView:
         self._page_count.value = "Pagina — / —"
         self._zoom.value = "Zoom: 100%"
         self._active_user.value = self._active_user_status_text()
+        self._set_document_actions_enabled(False, update=False)
         self.refresh_erp_documents()
         self.show_certificate_status()
+        self._update_controls(
+            self._viewer_layers,
+            self._pdf_stack,
+            self._document_name,
+            self._page_count,
+            self._zoom,
+            self._active_user,
+            self._status_indicator,
+            *self._document_action_control_instances(),
+        )
 
     def show_error(self, message: str) -> None:
         self.show_status(f"errore — {message}")
@@ -2258,7 +2486,7 @@ class MainView:
             self._current_signature_stroke = None
             self._signature_preview.src = self._signature_svg_data_uri()
             self._refresh_signature_canvas()
-            self._page.update()
+            self._update_controls(self._signature_canvas, self._signature_preview)
             self.show_status("firma cancellata")
             if on_clear is not None:
                 on_clear()
@@ -4458,6 +4686,33 @@ class MainView:
     def _update_signature_canvas(self) -> None:
         self._update_control(self._signature_canvas)
 
+    def _document_action_control_instances(self) -> tuple[object, ...]:
+        controls: list[object] = []
+        for group in self._document_action_controls.values():
+            controls.extend(group)
+        return tuple(controls)
+
+    @staticmethod
+    def _invoke_task_callback(callback: Callable[[], object]) -> None:
+        result = callback()
+        if inspect.isawaitable(result):
+            asyncio.run(result)
+
+    def _update_controls(self, *controls: object) -> None:
+        updated_any = False
+        needs_page_update = False
+        for control in controls:
+            if control is None or not hasattr(control, "update"):
+                needs_page_update = True
+                continue
+            try:
+                control.update()
+                updated_any = True
+            except (AssertionError, RuntimeError):
+                needs_page_update = True
+        if needs_page_update or not updated_any:
+            self._page.update()
+
     def _update_control(self, control: object) -> None:
         if hasattr(control, "update"):
             try:
@@ -4515,7 +4770,7 @@ class MainView:
             self._page.pop_dialog()
         elif hasattr(self._page, "close_dialog"):
             self._page.close_dialog()
-        self._page.update()
+        self._update_control(dialog)
 
     @staticmethod
     def _format_system_date(value: str) -> str:

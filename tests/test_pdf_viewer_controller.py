@@ -50,6 +50,7 @@ class FakeViewer:
         self.sign_missing_callback = None
         self.save_incomplete_callback = None
         self.cancel_incomplete_callback = None
+        self.save_action_enabled: list[bool] = []
 
     def display_document(
         self,
@@ -84,6 +85,9 @@ class FakeViewer:
 
     def show_status(self, message: str) -> None:
         self.statuses.append(message)
+
+    def set_save_action_enabled(self, enabled: bool) -> None:
+        self.save_action_enabled.append(enabled)
 
     def show_document_flow_downloaded(self, document_name: str) -> None:
         self.flow_events.append(("Scaricato", document_name))
@@ -867,6 +871,7 @@ class PDFViewerControllerTests(unittest.TestCase):
 
         controller.apply_mouse_signature(signature)
 
+        self.assertEqual(self.view.save_action_enabled, [False, True])
         self.assertEqual(self.view.errors[-1], "firma digitale non completata")
         self.assertTrue(controller.has_unsaved_signed_document())
         self.assertFalse(self.view.cleared)
@@ -975,6 +980,10 @@ class PDFViewerControllerTests(unittest.TestCase):
         controller.open_document("sample.pdf")
 
         self.assertEqual(self.view.defer_signature_capture_count, 1)
+        self.assertIn(
+            "firma Wacom: in attesa firma sulla tavoletta",
+            self.view.statuses,
+        )
         self.assertEqual(provider.capture_count, 1)
         self.assertFalse(self.view.open_signature_dialog_called)
         saved_overlay = self.view.pages[-1][4][0]
@@ -1265,6 +1274,7 @@ class PDFViewerControllerTests(unittest.TestCase):
 
             controller.apply_wacom_signature(signature)
 
+            self.assertEqual(view.save_action_enabled, [False])
             self.assertEqual(view.statuses[-1], "salvataggio PDF firmato in corso")
             self.service.save_signed_preview.assert_not_called()
             self.assertFalse(view.cleared)
@@ -1274,6 +1284,7 @@ class PDFViewerControllerTests(unittest.TestCase):
 
             self.service.save_signed_preview.assert_called_once()
             self.assertTrue(view.cleared)
+            self.assertEqual(view.save_action_enabled, [False])
             self.assertIn("PDF firmato salvato", view.statuses[-1])
 
     def test_open_signature_dialog_uses_mouse_when_preference_is_mouse(self) -> None:

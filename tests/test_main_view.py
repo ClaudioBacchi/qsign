@@ -1189,6 +1189,154 @@ class MainViewTests(unittest.TestCase):
             ],
         )
 
+    def test_app_shell_applies_qsign_theme_tokens(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.build()
+
+        root_column = page.controls[0]
+        main_area = root_column.controls[1]
+        navigation = main_area.content.controls[0]
+        viewer = main_area.content.controls[1]
+
+        self.assertEqual(page.theme.font_family, "Segoe UI")
+        self.assertTrue(page.theme.use_material3)
+        self.assertEqual(page.theme.color_scheme.primary, view._ft.Colors.BLUE_700)
+        self.assertEqual(page.theme.color_scheme.secondary, view._ft.Colors.RED_700)
+        self.assertEqual(page.theme.color_scheme.tertiary, view._ft.Colors.GREEN_700)
+        self.assertIsNotNone(page.dark_theme)
+        self.assertEqual(page.dark_theme.color_scheme.primary, view._ft.Colors.BLUE_300)
+        self.assertEqual(page.theme_mode, view._ft.ThemeMode.LIGHT)
+        self.assertEqual(navigation.width, 132)
+        self.assertEqual(navigation.bgcolor, view._ft.Colors.WHITE)
+        self.assertEqual(viewer.bgcolor, view._ft.Colors.GREY_200)
+
+    def test_document_commands_follow_open_document_state(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.build()
+
+        toolbar = page.controls[0].controls[0].content
+        document_menu_items = toolbar.controls[0].controls[0].controls
+        icon_toolbar = toolbar.controls[1]
+        guarded_menu_items = [
+            document_menu_items[1],
+            document_menu_items[2],
+            document_menu_items[5],
+            document_menu_items[6],
+        ]
+        document_icon_buttons = [
+            icon_toolbar.controls[1],
+            icon_toolbar.controls[2],
+            icon_toolbar.controls[4],
+            icon_toolbar.controls[5],
+        ]
+        navigation_icon_buttons = [
+            icon_toolbar.controls[7],
+            icon_toolbar.controls[8],
+        ]
+        zoom_icon_buttons = [
+            icon_toolbar.controls[10],
+            icon_toolbar.controls[11],
+        ]
+        guarded_icon_buttons = [
+            *document_icon_buttons,
+            *navigation_icon_buttons,
+            *zoom_icon_buttons,
+        ]
+
+        self.assertTrue(all(control.disabled for control in guarded_menu_items))
+        self.assertTrue(all(control.disabled for control in guarded_icon_buttons))
+        self.assertFalse(document_menu_items[0].disabled)
+        self.assertFalse(icon_toolbar.controls[0].disabled)
+        self.assertFalse(icon_toolbar.controls[3].disabled)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=100,
+            image_height=100,
+            page_number=1,
+            page_count=1,
+            zoom=1.0,
+        )
+
+        self.assertFalse(any(control.disabled for control in guarded_menu_items))
+        self.assertFalse(any(control.disabled for control in document_icon_buttons))
+        self.assertTrue(all(control.disabled for control in navigation_icon_buttons))
+        self.assertFalse(any(control.disabled for control in zoom_icon_buttons))
+
+        view.set_save_action_enabled(False)
+
+        self.assertTrue(document_menu_items[2].disabled)
+        self.assertTrue(icon_toolbar.controls[1].disabled)
+        self.assertFalse(document_menu_items[1].disabled)
+        self.assertFalse(icon_toolbar.controls[2].disabled)
+
+        view.set_save_action_enabled(True)
+
+        self.assertFalse(document_menu_items[2].disabled)
+        self.assertFalse(icon_toolbar.controls[1].disabled)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=100,
+            image_height=100,
+            page_number=1,
+            page_count=2,
+            zoom=1.0,
+        )
+
+        self.assertTrue(icon_toolbar.controls[7].disabled)
+        self.assertFalse(icon_toolbar.controls[8].disabled)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=100,
+            image_height=100,
+            page_number=2,
+            page_count=2,
+            zoom=1.0,
+        )
+
+        self.assertFalse(icon_toolbar.controls[7].disabled)
+        self.assertTrue(icon_toolbar.controls[8].disabled)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=100,
+            image_height=100,
+            page_number=1,
+            page_count=1,
+            zoom=0.25,
+        )
+
+        self.assertTrue(icon_toolbar.controls[10].disabled)
+        self.assertFalse(icon_toolbar.controls[11].disabled)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=100,
+            image_height=100,
+            page_number=1,
+            page_count=1,
+            zoom=4.0,
+        )
+
+        self.assertFalse(icon_toolbar.controls[10].disabled)
+        self.assertTrue(icon_toolbar.controls[11].disabled)
+
+        view.clear_document()
+
+        self.assertTrue(all(control.disabled for control in guarded_menu_items))
+        self.assertTrue(all(control.disabled for control in guarded_icon_buttons))
+
     def test_navigation_rail_shows_primary_sections_and_tracks_active_item(self) -> None:
         page = FakePage()
         service = FakeGeneralPreferencesService()
@@ -2302,7 +2450,7 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(view._status_icon.color, view._ft.Colors.GREEN_700)
         self.assertEqual(view._document_status.color, view._ft.Colors.GREEN_700)
 
-        view.show_status("firma Wacom: firma sulla tavoletta")
+        view.show_status("firma Wacom: in attesa firma sulla tavoletta")
 
         self.assertEqual(view._status_icon.name, view._ft.Icons.EDIT_OUTLINED)
         self.assertEqual(view._status_icon.color, view._ft.Colors.AMBER_800)

@@ -124,6 +124,8 @@ class PDFViewerView(Protocol):
 
     def show_status(self, message: str) -> None: ...
 
+    def set_save_action_enabled(self, enabled: bool) -> None: ...
+
     def show_document_flow_downloaded(self, document_name: str) -> None: ...
 
     def show_document_flow_signed(self, document_name: str) -> None: ...
@@ -903,7 +905,7 @@ class PDFViewerController:
             self._view.show_error("Firma Wacom non disponibile")
             return
         if self._wacom_capture_active:
-            self._view.show_status("firma Wacom gia in corso")
+            self._view.show_status("firma Wacom gia in attesa")
             return
         target = self._selected_signature_target()
         if target is None:
@@ -915,7 +917,7 @@ class PDFViewerController:
         cancel_event = threading.Event()
         self._wacom_capture_cancel = cancel_event
         self._wacom_capture_active = True
-        self._view.show_status("firma Wacom: firma sulla tavoletta")
+        self._view.show_status("firma Wacom: in attesa firma sulla tavoletta")
 
         def capture() -> None:
             try:
@@ -1140,6 +1142,7 @@ class PDFViewerController:
 
         erp_upload_context = self._erp_upload_context
         self._signed_pdf_save_active = True
+        self._set_save_action_enabled(False)
         self._view.show_status("salvataggio PDF firmato in corso")
 
         def save() -> None:
@@ -1171,6 +1174,7 @@ class PDFViewerController:
         self._signed_pdf_save_active = False
         self._has_unsaved_signature = True
         self._render_current_page()
+        self._set_save_action_enabled(True)
         self._view.show_error(str(error))
 
     def _finish_signed_pdf_save(
@@ -1210,6 +1214,11 @@ class PDFViewerController:
             erp_upload_context,
             flow_document_name,
         )
+
+    def _set_save_action_enabled(self, enabled: bool) -> None:
+        set_enabled = getattr(self._view, "set_save_action_enabled", None)
+        if callable(set_enabled):
+            set_enabled(enabled)
 
     def _queue_signed_pdf_erp_upload(
         self,
