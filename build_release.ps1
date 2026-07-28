@@ -267,17 +267,24 @@ function Copy-FletRecoveredBuildOutput {
 
     $RunnerReleaseDirectory = Join-Path $BuildDirectory "flutter\build\windows\x64\runner\Release"
     $AppSharedObject = Join-Path $BuildDirectory "flutter\build\windows\app.so"
+    $FlutterAssetsDirectory = Join-Path $BuildDirectory "flutter\build\flutter_assets"
     if (-not (Test-Path -LiteralPath (Join-Path $RunnerReleaseDirectory "QSign.exe") -PathType Leaf)) {
         throw "Flet runner output not found: $RunnerReleaseDirectory\QSign.exe"
     }
     if (-not (Test-Path -LiteralPath $AppSharedObject -PathType Leaf)) {
         throw "Flet AOT data not found: $AppSharedObject"
     }
+    if (-not (Test-Path -LiteralPath (Join-Path $FlutterAssetsDirectory "app\app.zip") -PathType Leaf)) {
+        throw "Flet app asset not found: $FlutterAssetsDirectory\app\app.zip"
+    }
 
     Copy-FletBuildOutput -SourceDirectory $RunnerReleaseDirectory -DestinationDirectory $DestinationDirectory
     $DataDirectory = Join-Path $DestinationDirectory "data"
+    $DestinationFlutterAssetsDirectory = Join-Path $DataDirectory "flutter_assets"
     New-Item -ItemType Directory -Path $DataDirectory -Force | Out-Null
     Copy-Item -LiteralPath $AppSharedObject -Destination (Join-Path $DataDirectory "app.so") -Force
+    New-Item -ItemType Directory -Path $DestinationFlutterAssetsDirectory -Force | Out-Null
+    Copy-Item -Path (Join-Path $FlutterAssetsDirectory "*") -Destination $DestinationFlutterAssetsDirectory -Recurse -Force
 
     $RuntimeDll = "C:\Windows\System32\vcruntime140_1.dll"
     if (-not (Test-Path -LiteralPath $RuntimeDll -PathType Leaf)) {
