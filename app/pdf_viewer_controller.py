@@ -1940,7 +1940,6 @@ class PDFViewerController:
         return final_score
 
     def _apply_template_anchor(self, document: Document, template: Template) -> bool:
-        completed_in_source = self._source_document_looks_signed(document)
         targets: list[SignatureTarget] = []
         for anchor_rule in template.anchor_rules:
             if (
@@ -1963,16 +1962,19 @@ class PDFViewerController:
                     )
                     if match is None:
                         continue
+                    rectangle = self._signature_from_template_anchor(
+                        match, placement
+                    )
                     targets.append(
                         SignatureTarget(
                             target_id=placement.placement_id,
-                            rectangle=self._signature_from_template_anchor(
-                                match, placement
-                            ),
+                            rectangle=rectangle,
                             page_index=match.page_index,
                             anchor_match=match,
                             role=placement.role,
-                            completed_in_source=completed_in_source,
+                            completed_in_source=self._signature_area_completed_in_source(
+                                document, match.page_index, rectangle
+                            ),
                         )
                     )
                     self._anchor_matches = result.matches
@@ -2000,14 +2002,17 @@ class PDFViewerController:
                 matches, selected_match, _ = demo_anchor
                 self._anchor_matches = matches
                 self._signature_anchor_match = selected_match
+                rectangle = self._signature_from_anchor(selected_match)
                 self._set_signature_targets(
                     (
                         SignatureTarget(
                             target_id="signature-1",
-                            rectangle=self._signature_from_anchor(selected_match),
+                            rectangle=rectangle,
                             page_index=selected_match.page_index,
                             anchor_match=selected_match,
-                            completed_in_source=completed_in_source,
+                            completed_in_source=self._signature_area_completed_in_source(
+                                document, selected_match.page_index, rectangle
+                            ),
                         ),
                     )
                 )
@@ -2018,22 +2023,25 @@ class PDFViewerController:
     def _apply_manual_fallback_placement(
         self, template: Template, document: Document | None = None
     ) -> bool:
-        completed_in_source = self._source_document_looks_signed(document)
         targets: list[SignatureTarget] = []
         for placement in template.placement_rules:
             if placement.side == "manual":
+                rectangle = Rectangle(
+                    placement.x_offset,
+                    placement.y_offset,
+                    placement.x_offset + placement.width,
+                    placement.y_offset + placement.height,
+                )
+                page_index = placement.page_index or 0
                 targets.append(
                     SignatureTarget(
                         target_id=placement.placement_id,
-                        rectangle=Rectangle(
-                            placement.x_offset,
-                            placement.y_offset,
-                            placement.x_offset + placement.width,
-                            placement.y_offset + placement.height,
-                        ),
-                        page_index=placement.page_index or 0,
+                        rectangle=rectangle,
+                        page_index=page_index,
                         role=placement.role,
-                        completed_in_source=completed_in_source,
+                        completed_in_source=self._signature_area_completed_in_source(
+                            document, page_index, rectangle
+                        ),
                     )
                 )
         if targets:
@@ -2051,6 +2059,29 @@ class PDFViewerController:
         stem = path.stem.casefold()
         parts = {part.casefold() for part in path.parts}
         return "documenti_firmati" in parts or "_signed" in stem
+
+    def _signature_area_completed_in_source(
+        self, document: Document | None, page_index: int, rectangle: Rectangle
+    ) -> bool:
+        if self._source_document_looks_signed(document):
+            return True
+        if document is None or not 0 <= page_index < len(document.pages):
+            return False
+        page = document.pages[page_index]
+        inner_rectangle = _expanded_rectangle(
+            rectangle,
+            horizontal=-(rectangle.width * 0.08),
+            vertical=-(rectangle.height * 0.08),
+        )
+        minimum_ink_area = max(12.0, rectangle.width * rectangle.height * 0.01)
+        for image_block in page.image_blocks:
+            intersection = _rectangle_intersection(inner_rectangle, image_block.bounds)
+            if (
+                intersection is not None
+                and intersection.width * intersection.height >= minimum_ink_area
+            ):
+                return True
+        return False
 
     def _template_anchor_match_for_placement(
         self,
@@ -2523,6 +2554,16 @@ def _rectangles_intersect(first: Rectangle, second: Rectangle) -> bool:
         and first.top < second.bottom
         and first.bottom > second.top
     )
+
+
+def _rectangle_intersection(first: Rectangle, second: Rectangle) -> Rectangle | None:
+    left = max(first.left, second.left)
+    top = max(first.top, second.top)
+    right = min(first.right, second.right)
+    bottom = min(first.bottom, second.bottom)
+    if right <= left or bottom <= top:
+        return None
+    return Rectangle(left, top, right, bottom)
 
 
 def _is_horizontally_near(anchor: Rectangle, target: Rectangle) -> bool:

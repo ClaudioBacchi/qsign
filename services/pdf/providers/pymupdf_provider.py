@@ -104,6 +104,10 @@ class PyMuPDFProvider(PdfProvider):
         try:
             words = self._load_words(page)
             text_blocks, image_blocks = self._load_blocks(page, words)
+            image_blocks = image_blocks + self._load_drawing_blocks(
+                page,
+                start_index=len(text_blocks) + len(image_blocks),
+            )
             self._logger.debug(
                 "PDF page parsed",
                 page=page_index,
@@ -165,6 +169,21 @@ class PyMuPDFProvider(PdfProvider):
             else:
                 image_blocks.append(ImageBlock(bounds=bounds, block_index=block_number))
         return tuple(text_blocks), tuple(image_blocks)
+
+    @staticmethod
+    def _load_drawing_blocks(
+        page: pymupdf.Page, start_index: int = 0
+    ) -> tuple[ImageBlock, ...]:
+        blocks: list[ImageBlock] = []
+        for index, drawing in enumerate(page.get_drawings(), start=start_index):
+            rect = drawing.get("rect")
+            if rect is None:
+                continue
+            bounds = _rect_from_sequence((rect.x0, rect.y0, rect.x1, rect.y1))
+            if bounds.width <= 0.5 or bounds.height <= 0.5:
+                continue
+            blocks.append(ImageBlock(bounds=bounds, block_index=index))
+        return tuple(blocks)
 
 
 def _rect_from_sequence(values: object) -> Rectangle:

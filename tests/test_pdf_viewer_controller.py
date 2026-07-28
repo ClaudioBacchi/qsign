@@ -9,7 +9,15 @@ from unittest.mock import MagicMock
 from app.services.erp_document_context import ErpSignedDocumentUploadContext
 from app.services.general_preferences_service import ErpUserSettings, SupabaseSettings
 from app.pdf_viewer_controller import AnchorOverlay, PDFViewerController
-from models.document import Document, Metadata, Page, Rectangle, TextBlock, Word
+from models.document import (
+    Document,
+    ImageBlock,
+    Metadata,
+    Page,
+    Rectangle,
+    TextBlock,
+    Word,
+)
 from models.pdf_document import PDFDocument
 from models.pdf_document import PageSize
 from models.template import (
@@ -2303,6 +2311,53 @@ class PDFViewerControllerTests(unittest.TestCase):
             self.service.save_signed_previews.assert_not_called()
             self.assertTrue(view.cleared)
 
+    def test_erp_reopened_partial_multisignature_uses_source_signed_box(self) -> None:
+        self.document = PDFDocument(
+            path=Path("erp_download/sample.pdf"),
+            filename="sample.pdf",
+            page_count=1,
+            page_sizes=(PageSize(200, 200),),
+            loaded=True,
+        )
+        self.service.open_document.return_value = self.document
+        self.service.current_document = self.document
+        self.service.save_signed_preview.return_value = Path(
+            "documenti_firmati/sample_signed_again.pdf"
+        )
+        view = PassiveSignatureDialogViewer()
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create(
+                "qsign.tests.controller.erp_reopened_partial_multi"
+            ),
+            pdf_provider=FakePDFProviderWithSignedFirstBox(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create(
+                    "qsign.tests.controller.erp_reopened_partial_multi_detector"
+                )
+            ),
+            template_repository=FakeTwoBoxTemplateRepository(),
+        )
+
+        controller.open_document("erp_download/sample.pdf")
+        overlays = view.pages[-1][4]
+        controller.open_signature_dialog(overlays[1].target_id)
+        new_signature = CapturedSignature(
+            content=b"<svg><polyline points='3,3 4,4'/></svg>",
+            media_type="image/svg+xml",
+        )
+        view.signature_confirm_callback(new_signature)
+
+        controller.save_signed_pdf()
+
+        self.assertIsNone(view.incomplete_missing_count)
+        saved_signature, area = self.service.save_signed_preview.call_args.args
+        self.assertEqual(saved_signature, new_signature)
+        self.assertEqual(area.x, 110)
+        self.service.save_signed_previews.assert_not_called()
+        self.assertTrue(view.cleared)
+
     def test_learned_manual_boxes_are_used_even_when_demo_anchor_matches(self) -> None:
         self.controller = PDFViewerController(
             pdf_service=self.service,
@@ -2704,6 +2759,49 @@ class FakePDFProviderWithoutAnchors:
                             words=words,
                             block_index=0,
                         ),
+                    ),
+                ),
+            ),
+            metadata=Metadata(),
+        )
+
+
+class FakePDFProviderWithSignedFirstBox:
+    def load_document(self, path: str | Path) -> Document:
+        words = (
+            Word(
+                text="Documento",
+                bounds=Rectangle(10, 20, 70, 30),
+                block_index=0,
+                line_index=0,
+                word_index=0,
+            ),
+            Word(
+                text="Speciale",
+                bounds=Rectangle(75, 20, 130, 30),
+                block_index=0,
+                line_index=0,
+                word_index=1,
+            ),
+        )
+        return Document(
+            source_path=Path(path),
+            page_count=1,
+            pages=(
+                Page(
+                    index=0,
+                    width=200,
+                    height=200,
+                    text_blocks=(
+                        TextBlock(
+                            text="Documento Speciale",
+                            bounds=Rectangle(10, 20, 130, 30),
+                            words=words,
+                            block_index=0,
+                        ),
+                    ),
+                    image_blocks=(
+                        ImageBlock(bounds=Rectangle(28, 38, 88, 58), block_index=1),
                     ),
                 ),
             ),
@@ -3182,6 +3280,55 @@ class FakeRecognizedLearnedTemplateRepository:
                         x_offset=20,
                         y_offset=30,
                         width=80,
+                        height=40,
+                    ),
+                ),
+            ),
+        )
+
+    def get_template(self, template_id: str) -> Template:
+        return self.list_templates()[0]
+
+
+class FakeTwoBoxTemplateRepository:
+    def list_templates(self) -> tuple[Template, ...]:
+        return (
+            Template(
+                template_id="learned_two_box_model",
+                code="LEARNED_TWO_BOX_MODEL",
+                name="Existing two box learned model",
+                document_type="manual_signature_flow",
+                version="0.1.0",
+                state=TemplateState.DRAFT,
+                recognition_rules=(
+                    RecognitionRule(
+                        rule_id="contains-special",
+                        rule_type="literal",
+                        expression="Documento Speciale",
+                        required=True,
+                    ),
+                ),
+                placement_rules=(
+                    PlacementRule(
+                        placement_id="manual-signature",
+                        role="signer",
+                        anchor_id="manual",
+                        side="manual",
+                        alignment="manual",
+                        x_offset=20,
+                        y_offset=30,
+                        width=80,
+                        height=40,
+                    ),
+                    PlacementRule(
+                        placement_id="manual-signature-2",
+                        role="signer",
+                        anchor_id="manual",
+                        side="manual",
+                        alignment="manual",
+                        x_offset=110,
+                        y_offset=30,
+                        width=70,
                         height=40,
                     ),
                 ),
