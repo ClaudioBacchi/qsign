@@ -15,6 +15,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+import pymupdf
+
 from app.services.certificate_service import (
     CertificateInfo,
     CertificateService,
@@ -325,6 +327,17 @@ class MainView:
             border_radius=QSignTheme.RADIUS_MD,
         )
         self._apply_status_style(self._document_status.value)
+        self._signature_status_badge_text = ft.Text(
+            "",
+            size=12,
+            weight=ft.FontWeight.BOLD,
+        )
+        self._signature_status_badge = ft.Container(
+            content=self._signature_status_badge_text,
+            padding=ft.Padding(left=10, top=5, right=10, bottom=5),
+            border_radius=QSignTheme.RADIUS_MD,
+            visible=False,
+        )
         self._viewer_placeholder = ft.GestureDetector(
             content=ft.Container(
                 content=ft.Image(
@@ -462,6 +475,7 @@ class MainView:
                     self._page_count,
                     self._zoom,
                     self._active_user,
+                    self._signature_status_badge,
                     self._status_indicator,
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -1032,6 +1046,8 @@ class MainView:
         anchor_count: int = 0,
         selected_anchor: object | None = None,
         workflow_status: str = "",
+        signature_signed_count: int = 0,
+        signature_total_count: int = 0,
     ) -> None:
         """Display renderer output without knowing which engine produced it."""
         image_source = base64.b64encode(image_content).decode("ascii")
@@ -1084,12 +1100,17 @@ class MainView:
                 selected_anchor=selected_anchor,
             )
         )
+        self._set_signature_status_badge(
+            signature_signed_count,
+            signature_total_count,
+        )
         self._update_controls(
             self._viewer_layers,
             self._pdf_stack,
             self._document_name,
             self._page_count,
             self._zoom,
+            self._signature_status_badge,
             self._status_indicator,
             *self._document_action_control_instances(),
         )
@@ -1111,6 +1132,32 @@ class MainView:
         self._status_icon.color = color
         self._document_status.color = color
         self._status_indicator.bgcolor = self._ft.Colors.with_opacity(0.08, color)
+
+    def _set_signature_status_badge(self, signed_count: int, total_count: int) -> None:
+        if total_count <= 0:
+            self._signature_status_badge.visible = False
+            self._signature_status_badge_text.value = ""
+            return
+        signed_count = max(0, min(signed_count, total_count))
+        complete = signed_count == total_count
+        if signed_count == 0:
+            label = "manca firma"
+        else:
+            label = f"firma {signed_count}/{total_count}"
+        color = self._ft.Colors.GREEN_700 if complete else self._ft.Colors.AMBER_800
+        self._signature_status_badge_text.value = label
+        self._signature_status_badge_text.color = color
+        self._signature_status_badge.bgcolor = self._ft.Colors.with_opacity(
+            0.10,
+            color,
+        )
+        self._signature_status_badge.border = self._ft.Border(
+            left=self._ft.BorderSide(1, color),
+            top=self._ft.BorderSide(1, color),
+            right=self._ft.BorderSide(1, color),
+            bottom=self._ft.BorderSide(1, color),
+        )
+        self._signature_status_badge.visible = True
 
     def _status_style(self, value: str) -> tuple[object, str]:
         text = value.lower()
@@ -2351,6 +2398,7 @@ class MainView:
         self._page_count.value = "Pagina — / —"
         self._zoom.value = "Zoom: 100%"
         self._active_user.value = self._active_user_status_text()
+        self._set_signature_status_badge(0, 0)
         self._set_document_actions_enabled(False, update=False)
         self.refresh_erp_documents()
         self.show_certificate_status()
@@ -2361,6 +2409,7 @@ class MainView:
             self._page_count,
             self._zoom,
             self._active_user,
+            self._signature_status_badge,
             self._status_indicator,
             *self._document_action_control_instances(),
         )
@@ -2690,6 +2739,67 @@ class MainView:
         )
         sort_state = {"field": "created_at", "ascending": False}
         table_container = ft.Container(expand=True)
+        selected_path = {"path": documents[0] if documents else None}
+        preview_image = ft.Image(
+            src="",
+            width=260,
+            height=360,
+            fit=ft.BoxFit.CONTAIN,
+            visible=False,
+        )
+        preview_title = ft.Text(
+            "",
+            weight=ft.FontWeight.BOLD,
+            size=13,
+            no_wrap=False,
+        )
+        preview_meta = ft.Text("", size=12, color=ft.Colors.GREY_700)
+        preview_message = ft.Text(
+            "Seleziona un documento",
+            size=12,
+            color=ft.Colors.GREY_700,
+        )
+        open_selected_button = ft.OutlinedButton(
+            "Apri PDF",
+            disabled=True,
+            on_click=lambda _: self._open_signed_file(selected_path["path"]),
+        )
+        open_folder_button = ft.OutlinedButton(
+            "Apri cartella",
+            disabled=True,
+            on_click=lambda _: self._open_signed_folder(selected_path["path"]),
+        )
+        preview_panel = ft.Container(
+            width=300,
+            padding=ft.Padding(left=14, top=0, right=0, bottom=0),
+            content=ft.Column(
+                controls=[
+                    preview_title,
+                    preview_meta,
+                    ft.Container(
+                        content=preview_image,
+                        width=280,
+                        height=370,
+                        alignment=ft.Alignment(0, 0),
+                        bgcolor=ft.Colors.GREY_100,
+                        border=ft.Border(
+                            left=ft.BorderSide(1, ft.Colors.GREY_300),
+                            top=ft.BorderSide(1, ft.Colors.GREY_300),
+                            right=ft.BorderSide(1, ft.Colors.GREY_300),
+                            bottom=ft.BorderSide(1, ft.Colors.GREY_300),
+                        ),
+                    ),
+                    preview_message,
+                    ft.Row(
+                        controls=[open_selected_button, open_folder_button],
+                        wrap=True,
+                        spacing=8,
+                    ),
+                ],
+                spacing=8,
+                tight=True,
+            ),
+        )
 
         def sort_label(field: str, label: str) -> str:
             if sort_state["field"] != field:
@@ -2721,8 +2831,48 @@ class MainView:
                 sort_state["ascending"] = field == "name"
             render_table()
 
+        def select_document(path: Path | None, *, update: bool = True) -> None:
+            selected_path["path"] = path
+            available = path is not None and path.is_file()
+            open_selected_button.disabled = not available
+            open_folder_button.disabled = not available
+            if not available:
+                preview_title.value = ""
+                preview_meta.value = ""
+                preview_image.src = ""
+                preview_image.visible = False
+                preview_message.value = (
+                    "Nessun documento firmato trovato"
+                    if not documents
+                    else "Seleziona un documento"
+                )
+            else:
+                preview_title.value = path.name
+                preview_meta.value = self._format_file_created_at(path)
+                preview_image.src = self._signed_history_preview_data_uri(path)
+                preview_image.visible = bool(preview_image.src)
+                preview_message.value = (
+                    ""
+                    if preview_image.visible
+                    else "Anteprima non disponibile"
+                )
+            if update:
+                self._update_controls(
+                    preview_panel,
+                    preview_title,
+                    preview_meta,
+                    preview_image,
+                    preview_message,
+                    open_selected_button,
+                    open_folder_button,
+                )
+
         def render_table(_: object | None = None) -> None:
             rows = filtered_documents()
+            if rows and selected_path["path"] not in rows:
+                select_document(rows[0], update=False)
+            if not rows:
+                select_document(None, update=False)
             if not documents:
                 table_container.content = ft.Container(
                     content=ft.Text("Nessun documento firmato trovato"),
@@ -2752,7 +2902,7 @@ class MainView:
                                         on_click=lambda _: sort_by("created_at"),
                                     )
                                 ),
-                                ft.DataColumn(ft.Text("Apri")),
+                                ft.DataColumn(ft.Text("Azioni")),
                             ],
                             rows=[
                                 ft.DataRow(
@@ -2761,12 +2911,12 @@ class MainView:
                                             ft.Container(
                                                 content=ft.TextButton(
                                                     path.name,
-                                                    on_click=lambda _, item=path: self._open_signed_file(
+                                                    on_click=lambda _, item=path: select_document(
                                                         item
                                                     ),
                                                 ),
                                                 alignment=ft.Alignment(-1, 0),
-                                                width=560,
+                                                width=420,
                                             )
                                         ),
                                         ft.DataCell(
@@ -2779,12 +2929,25 @@ class MainView:
                                             )
                                         ),
                                         ft.DataCell(
-                                            ft.IconButton(
-                                                icon=ft.Icons.FOLDER_OPEN,
-                                                tooltip="Apri documento firmato",
-                                                on_click=lambda _, item=path: self._open_signed_file(
-                                                    item
-                                                ),
+                                            ft.Row(
+                                                controls=[
+                                                    ft.IconButton(
+                                                        icon=ft.Icons.OPEN_IN_NEW,
+                                                        tooltip="Apri documento firmato",
+                                                        on_click=lambda _, item=path: self._open_signed_file(
+                                                            item
+                                                        ),
+                                                    ),
+                                                    ft.IconButton(
+                                                        icon=ft.Icons.FOLDER_OPEN,
+                                                        tooltip="Apri cartella",
+                                                        on_click=lambda _, item=path: self._open_signed_folder(
+                                                            item
+                                                        ),
+                                                    ),
+                                                ],
+                                                spacing=0,
+                                                tight=True,
                                             )
                                         ),
                                     ]
@@ -2800,6 +2963,7 @@ class MainView:
 
         search.on_change = render_table
         render_table()
+        select_document(selected_path["path"], update=False)
 
         actions = [
             *(
@@ -2819,12 +2983,17 @@ class MainView:
         dialog = ft.AlertDialog(
             title=ft.Text("Storico documenti firmati"),
             content=ft.Container(
-                width=840,
+                width=980,
                 height=520,
                 content=ft.Column(
                     controls=[
                         search,
-                        table_container,
+                        ft.Row(
+                            controls=[table_container, preview_panel],
+                            spacing=14,
+                            expand=True,
+                            vertical_alignment=ft.CrossAxisAlignment.START,
+                        ),
                     ],
                     tight=True,
                     spacing=10,
@@ -4294,11 +4463,33 @@ class MainView:
                 failed.append(path)
         return deleted, failed
 
-    def _open_signed_file(self, path: Path) -> None:
+    def _signed_history_preview_data_uri(self, path: Path) -> str:
+        try:
+            document = pymupdf.open(path)
+            try:
+                if document.page_count <= 0:
+                    return ""
+                page = document.load_page(0)
+                pixmap = page.get_pixmap(matrix=pymupdf.Matrix(0.35, 0.35), alpha=False)
+                encoded = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
+                return f"data:image/png;base64,{encoded}"
+            finally:
+                document.close()
+        except Exception:
+            return ""
+
+    def _open_signed_file(self, path: Path | None) -> None:
+        if path is None:
+            return
         if hasattr(self._page, "run_task"):
             self._page.run_task(self._launch_signed_file, path)
             return
         self._page.launch_url(path.resolve().as_uri())
+
+    def _open_signed_folder(self, path: Path | None) -> None:
+        if path is None:
+            return
+        self._open_url(path.resolve().parent.as_uri())
 
     async def _launch_signed_file(self, path: Path) -> None:
         result = self._page.launch_url(path.resolve().as_uri())

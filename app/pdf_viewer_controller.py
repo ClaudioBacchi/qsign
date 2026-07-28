@@ -83,6 +83,8 @@ class PDFViewerView(Protocol):
         anchor_count: int = 0,
         selected_anchor: AnchorMatch | None = None,
         workflow_status: str = "",
+        signature_signed_count: int = 0,
+        signature_total_count: int = 0,
     ) -> None: ...
 
     def set_manual_signature_mode(self, enabled: bool) -> None: ...
@@ -582,6 +584,8 @@ class PDFViewerController:
                 anchor_count=len(self._anchor_matches),
                 selected_anchor=self._first_anchor_on_current_page(),
                 workflow_status=self._workflow_status,
+                signature_signed_count=self._signed_signature_target_count(),
+                signature_total_count=len(self._signature_targets),
             )
         except Exception as error:
             self._logger.exception(
@@ -590,6 +594,13 @@ class PDFViewerController:
                 zoom=self.state.zoom,
             )
             self._view.show_error(str(error))
+
+    def _signed_signature_target_count(self) -> int:
+        return sum(
+            1
+            for target in self._signature_targets
+            if self._signature_target_is_complete(target)
+        )
 
     def _analyze_document(self, path: Path) -> None:
         self._canonical_document = None

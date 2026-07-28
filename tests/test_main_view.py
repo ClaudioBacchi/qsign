@@ -1558,7 +1558,8 @@ class MainViewTests(unittest.TestCase):
             view.show_signed_history()
 
             self.assertEqual(page.dialog.title.value, "Storico documenti firmati")
-            table_container = page.dialog.content.content.controls[1]
+            history_row = page.dialog.content.content.controls[1]
+            table_container = history_row.controls[0]
             table = table_container.content.controls[0]
             self.assertEqual(len(table.rows), 1)
             row = table.rows[0]
@@ -1569,11 +1570,41 @@ class MainViewTests(unittest.TestCase):
                 r"\d{2}/\d{2}/\d{4} ",
             )
             open_button = row.cells[2].content
-            self.assertEqual(open_button.tooltip, "Apri documento firmato")
+            self.assertEqual(open_button.controls[0].tooltip, "Apri documento firmato")
+            self.assertEqual(open_button.controls[1].tooltip, "Apri cartella")
 
-            name_button.on_click(None)
+            open_button.controls[0].on_click(None)
 
             self.assertEqual(page.launched_urls, [signed_pdf.resolve().as_uri()])
+
+    def test_signed_history_previews_selected_document_and_opens_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            signed_dir = Path(directory)
+            signed_pdf = signed_dir / "contratto_signed.pdf"
+            signed_pdf.write_bytes(_valid_pdf_bytes())
+            page = FakePage()
+            view = MainView(page, signed_history_directory=signed_dir)
+
+            view.show_signed_history()
+
+            history_row = page.dialog.content.content.controls[1]
+            table_container = history_row.controls[0]
+            preview_panel = history_row.controls[1]
+            table = table_container.content.controls[0]
+            row = table.rows[0]
+
+            row.cells[0].content.content.on_click(None)
+
+            preview_controls = preview_panel.content.controls
+            self.assertEqual(preview_controls[0].value, "contratto_signed.pdf")
+            self.assertTrue(preview_controls[2].content.visible)
+            self.assertTrue(
+                preview_controls[2].content.src.startswith("data:image/png;base64,")
+            )
+
+            row.cells[2].content.controls[1].on_click(None)
+
+            self.assertEqual(page.launched_urls, [signed_pdf.parent.resolve().as_uri()])
 
     def test_signed_history_shows_empty_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1583,7 +1614,7 @@ class MainViewTests(unittest.TestCase):
             view.show_signed_history()
 
             self.assertEqual(
-                page.dialog.content.content.controls[1].content.content.value,
+                page.dialog.content.content.controls[1].controls[0].content.content.value,
                 "Nessun documento firmato trovato",
             )
 
@@ -1624,7 +1655,7 @@ class MainViewTests(unittest.TestCase):
             view.show_signed_history()
             controls = page.dialog.content.content.controls
             search = controls[0]
-            table_container = controls[1]
+            table_container = controls[1].controls[0]
 
             search.value = "beta"
             search.on_change(None)
@@ -1693,7 +1724,7 @@ class MainViewTests(unittest.TestCase):
             self.assertFalse(second_pdf.exists())
             self.assertTrue(ignored_txt.exists())
             self.assertEqual(
-                page.dialog.content.content.controls[1].content.content.value,
+                page.dialog.content.content.controls[1].controls[0].content.content.value,
                 "Nessun documento firmato trovato",
             )
             self.assertEqual(
@@ -2215,6 +2246,96 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(overlay.content.width, 80)
         self.assertEqual(overlay.content.height, 40)
         self.assertGreater(len(overlay.content.shapes), 0)
+
+    def test_signature_status_badge_shows_missing_signature(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=200,
+            image_height=300,
+            page_number=1,
+            page_count=1,
+            zoom=1.0,
+            signature_signed_count=0,
+            signature_total_count=1,
+        )
+
+        self.assertTrue(view._signature_status_badge.visible)
+        self.assertEqual(view._signature_status_badge_text.value, "manca firma")
+        self.assertEqual(
+            view._signature_status_badge_text.color,
+            view._ft.Colors.AMBER_800,
+        )
+
+    def test_signature_status_badge_shows_partial_signature_count(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=200,
+            image_height=300,
+            page_number=1,
+            page_count=1,
+            zoom=1.0,
+            signature_signed_count=1,
+            signature_total_count=2,
+        )
+
+        self.assertTrue(view._signature_status_badge.visible)
+        self.assertEqual(view._signature_status_badge_text.value, "firma 1/2")
+        self.assertEqual(
+            view._signature_status_badge_text.color,
+            view._ft.Colors.AMBER_800,
+        )
+
+    def test_signature_status_badge_shows_completed_signature_count(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=200,
+            image_height=300,
+            page_number=1,
+            page_count=1,
+            zoom=1.0,
+            signature_signed_count=2,
+            signature_total_count=2,
+        )
+
+        self.assertTrue(view._signature_status_badge.visible)
+        self.assertEqual(view._signature_status_badge_text.value, "firma 2/2")
+        self.assertEqual(
+            view._signature_status_badge_text.color,
+            view._ft.Colors.GREEN_700,
+        )
+
+    def test_signature_status_badge_hides_when_document_is_closed(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=200,
+            image_height=300,
+            page_number=1,
+            page_count=1,
+            zoom=1.0,
+            signature_signed_count=1,
+            signature_total_count=1,
+        )
+
+        view.clear_document()
+
+        self.assertFalse(view._signature_status_badge.visible)
+        self.assertEqual(view._signature_status_badge_text.value, "")
 
     def test_signature_dialog_captures_clear_and_confirms_svg_signature(self) -> None:
         page = FakePage()

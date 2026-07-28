@@ -31,7 +31,7 @@ from services.signature.signature_service import CapturedSignature
 class FakeViewer:
     def __init__(self) -> None:
         self.pages: list[
-            tuple[int, int, float, bytes, tuple[AnchorOverlay, ...], int]
+            tuple[int, int, float, bytes, tuple[AnchorOverlay, ...], int, int, int]
         ] = []
         self.cleared = False
         self.errors: list[str] = []
@@ -65,6 +65,8 @@ class FakeViewer:
         anchor_count: int = 0,
         selected_anchor: AnchorMatch | None = None,
         workflow_status: str = "",
+        signature_signed_count: int = 0,
+        signature_total_count: int = 0,
     ) -> None:
         self.pages.append(
             (
@@ -74,6 +76,8 @@ class FakeViewer:
                 image_content,
                 anchor_overlays,
                 anchor_count,
+                signature_signed_count,
+                signature_total_count,
             )
         )
 
@@ -1242,6 +1246,30 @@ class PDFViewerControllerTests(unittest.TestCase):
         self.assertEqual(view.ui_tasks, [])
         self.service.save_signed_previews.assert_not_called()
         self.assertEqual(view.errors, [])
+
+    def test_render_passes_signature_badge_counts_to_view(self) -> None:
+        first_signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.signature_badge"),
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        controller.add_signature_box()
+        controller.set_manual_signature_rectangle(110, 120, 50, 30, 200, 200)
+        overlays = self.view.pages[-1][4]
+
+        self.assertEqual(self.view.pages[-1][6], 0)
+        self.assertEqual(self.view.pages[-1][7], 2)
+
+        controller.apply_wacom_signature(first_signature, overlays[0].target_id)
+
+        self.assertEqual(self.view.pages[-1][6], 2)
+        self.assertEqual(self.view.pages[-1][7], 2)
 
     def test_wacom_auto_save_runs_signed_pdf_write_in_background(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
