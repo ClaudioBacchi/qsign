@@ -14,13 +14,17 @@ param(
     [switch]$SkipTests,
 
     [Parameter()]
-    [switch]$SkipInstaller
+    [switch]$SkipInstaller,
+
+    [Parameter()]
+    [switch]$UseFletBuild
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 $VirtualEnvironment = Join-Path $ProjectRoot ".venv"
 $PythonExecutable = Join-Path $VirtualEnvironment "Scripts\python.exe"
+$FletExecutable = Join-Path $VirtualEnvironment "Scripts\flet.exe"
 $BuildDirectory = Join-Path $ProjectRoot "build"
 $DistributionDirectory = Join-Path $ProjectRoot "dist"
 $ReleaseRoot = Join-Path $ProjectRoot "release"
@@ -49,6 +53,26 @@ function ConvertTo-QSignReleaseVersion {
         return ('{0:00}.{1:000}' -f [int]$Matches[1], [int]$Matches[3])
     }
     throw "Unsupported release version '$Version'. Expected format 00.000."
+}
+
+function ConvertTo-FletBuildVersion {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    $Normalized = ConvertTo-QSignReleaseVersion -Version $Version
+    if ($Normalized -notmatch '^(\d{2})\.(\d{3})$') {
+        throw "Unsupported release version '$Normalized'. Expected format 00.000."
+    }
+    return ('{0}.{1}.0' -f [int]$Matches[1], [int]$Matches[2])
+}
+
+function ConvertTo-FletBuildNumber {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    $Normalized = ConvertTo-QSignReleaseVersion -Version $Version
+    if ($Normalized -notmatch '^(\d{2})\.(\d{3})$') {
+        throw "Unsupported release version '$Normalized'. Expected format 00.000."
+    }
+    return ([int]$Matches[1] * 1000) + [int]$Matches[2]
 }
 
 function Get-Next-QSignReleaseVersion {
@@ -220,6 +244,124 @@ function Test-ZipArchive {
     }
 }
 
+function Copy-FletBuildOutput {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDirectory,
+        [Parameter(Mandatory = $true)][string]$DestinationDirectory
+    )
+
+    if (-not (Test-Path -LiteralPath (Join-Path $SourceDirectory "QSign.exe") -PathType Leaf)) {
+        throw "Flet build output not found: $SourceDirectory\QSign.exe"
+    }
+    if (Test-Path -LiteralPath $DestinationDirectory) {
+        Remove-Item -LiteralPath $DestinationDirectory -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $DestinationDirectory) -Force | Out-Null
+    Copy-Item -LiteralPath $SourceDirectory -Destination $DestinationDirectory -Recurse
+}
+
+function Copy-FletRecoveredBuildOutput {
+    param(
+        [Parameter(Mandatory = $true)][string]$DestinationDirectory
+    )
+
+    $RunnerReleaseDirectory = Join-Path $BuildDirectory "flutter\build\windows\x64\runner\Release"
+    $AppSharedObject = Join-Path $BuildDirectory "flutter\build\windows\app.so"
+    if (-not (Test-Path -LiteralPath (Join-Path $RunnerReleaseDirectory "QSign.exe") -PathType Leaf)) {
+        throw "Flet runner output not found: $RunnerReleaseDirectory\QSign.exe"
+    }
+    if (-not (Test-Path -LiteralPath $AppSharedObject -PathType Leaf)) {
+        throw "Flet AOT data not found: $AppSharedObject"
+    }
+
+    Copy-FletBuildOutput -SourceDirectory $RunnerReleaseDirectory -DestinationDirectory $DestinationDirectory
+    $DataDirectory = Join-Path $DestinationDirectory "data"
+    New-Item -ItemType Directory -Path $DataDirectory -Force | Out-Null
+    Copy-Item -LiteralPath $AppSharedObject -Destination (Join-Path $DataDirectory "app.so") -Force
+
+    $RuntimeDll = "C:\Windows\System32\vcruntime140_1.dll"
+    if (-not (Test-Path -LiteralPath $RuntimeDll -PathType Leaf)) {
+        $RuntimeDll = Get-ChildItem -Path (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\18\BuildTools\VC\Redist") -Recurse -Filter "vcruntime140_1.dll" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*\x64\*" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $RuntimeDll -or -not (Test-Path -LiteralPath $RuntimeDll -PathType Leaf)) {
+        throw "Unable to locate vcruntime140_1.dll required by the Flet Windows bundle."
+    }
+    Copy-Item -LiteralPath $RuntimeDll -Destination $DestinationDirectory -Force
+
+    $PluginsDirectory = Join-Path $BuildDirectory "flutter\build\windows\x64\plugins"
+    if (Test-Path -LiteralPath $PluginsDirectory -PathType Container) {
+        Get-ChildItem -LiteralPath $PluginsDirectory -Recurse -Filter "*.dll" |
+            Where-Object { $_.DirectoryName -like "*\Release" } |
+            ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $DestinationDirectory -Force
+            }
+    }
+}
+
+function Build-FletWindowsBundle {
+    param([Parameter(Mandatory = $true)][string]$ReleaseVersion)
+
+    if (-not (Test-Path -LiteralPath $FletExecutable -PathType Leaf)) {
+        throw "Flet CLI not found: $FletExecutable. Install flet-cli==0.85.3 in the virtual environment."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot "main.py") -PathType Leaf)) {
+        throw "Flet entry point not found: main.py"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot "assets\icon_windows.ico") -PathType Leaf)) {
+        throw "Flet Windows icon not found: assets\icon_windows.ico"
+    }
+
+    $FletOutputDirectory = Join-Path $BuildDirectory "flet_windows"
+    $FletLog = Join-Path $BuildDirectory "flet-build-windows.log"
+    $BuildVersion = ConvertTo-FletBuildVersion -Version $ReleaseVersion
+    $BuildNumber = ConvertTo-FletBuildNumber -Version $ReleaseVersion
+    $PreviousPythonIoEncoding = $env:PYTHONIOENCODING
+    $PreviousPythonUtf8 = $env:PYTHONUTF8
+    $env:PYTHONIOENCODING = "utf-8"
+    $env:PYTHONUTF8 = "1"
+    try {
+        & $FletExecutable build windows $ProjectRoot `
+            -o $FletOutputDirectory `
+            --project qsign `
+            --artifact QSign `
+            --product "QSign" `
+            --description "Extensible document-signing platform" `
+            --company "Queen Srl" `
+            --copyright "Copyright Queen Srl" `
+            --build-version $BuildVersion `
+            --build-number $BuildNumber `
+            --module-name main `
+            --no-rich-output `
+            --yes *> $FletLog
+        $FletExitCode = $LASTEXITCODE
+    }
+    finally {
+        $env:PYTHONIOENCODING = $PreviousPythonIoEncoding
+        $env:PYTHONUTF8 = $PreviousPythonUtf8
+    }
+
+    if ($FletExitCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $FletOutputDirectory "QSign.exe") -PathType Leaf)) {
+        Copy-FletBuildOutput -SourceDirectory $FletOutputDirectory -DestinationDirectory $PortableAppDirectory
+        return
+    }
+
+    if (
+        Test-Path -LiteralPath (Join-Path $BuildDirectory "flutter\build\windows\x64\runner\Release\QSign.exe") -PathType Leaf
+    ) {
+        Write-Warning "Flet build returned exit code $FletExitCode. Recovering portable bundle from runner output. See: $FletLog"
+        Copy-FletRecoveredBuildOutput -DestinationDirectory $PortableAppDirectory
+        return
+    }
+
+    if (Test-Path -LiteralPath $FletLog -PathType Leaf) {
+        Get-Content -LiteralPath $FletLog | Select-Object -Last 80
+    }
+    throw "Flet Windows build failed. See: $FletLog"
+}
+
 if ($Release) {
     $Release = ConvertTo-QSignReleaseVersion -Version $Release
     Set-QSignAppVersion -Version $Release
@@ -271,20 +413,26 @@ foreach ($Directory in @($BuildDirectory, $DistributionDirectory, $ReleaseDirect
 }
 New-Item -ItemType Directory -Path $BuildDirectory, $DistributionDirectory, $PortableDirectory, $InstallerDirectory -Force | Out-Null
 
-Write-Host "Preparing Flet desktop runtime..."
-New-FletRuntimeArchive -DestinationPath $FletRuntimeArchive
-
-Write-Host "Building PyInstaller bundle..."
-& $PythonExecutable -m PyInstaller --noconfirm --clean --distpath $DistributionDirectory --workpath (Join-Path $BuildDirectory "pyinstaller") QSign.spec
-if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller build failed."
+if ($UseFletBuild) {
+    Write-Host "Building Flet Windows bundle..."
+    Build-FletWindowsBundle -ReleaseVersion $Release
 }
-if (-not (Test-Path -LiteralPath (Join-Path $DistributionDirectory "QSign\QSign.exe") -PathType Leaf)) {
-    throw "PyInstaller output not found: dist\QSign\QSign.exe"
-}
+else {
+    Write-Host "Preparing Flet desktop runtime..."
+    New-FletRuntimeArchive -DestinationPath $FletRuntimeArchive
 
-Write-Host "Staging portable release..."
-Copy-Item -LiteralPath (Join-Path $DistributionDirectory "QSign") -Destination $PortableDirectory -Recurse
+    Write-Host "Building PyInstaller bundle..."
+    & $PythonExecutable -m PyInstaller --noconfirm --clean --distpath $DistributionDirectory --workpath (Join-Path $BuildDirectory "pyinstaller") QSign.spec
+    if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller build failed."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $DistributionDirectory "QSign\QSign.exe") -PathType Leaf)) {
+        throw "PyInstaller output not found: dist\QSign\QSign.exe"
+    }
+
+    Write-Host "Staging portable release..."
+    Copy-Item -LiteralPath (Join-Path $DistributionDirectory "QSign") -Destination $PortableDirectory -Recurse
+}
 if (Test-Path -LiteralPath $PortableZip) {
     Remove-Item -LiteralPath $PortableZip -Force
 }
