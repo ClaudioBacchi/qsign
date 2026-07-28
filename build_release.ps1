@@ -341,6 +341,8 @@ function Build-FletWindowsBundle {
             --build-version $BuildVersion `
             --build-number $BuildNumber `
             --module-name main `
+            --compile-app `
+            --exclude ".git,.venv,build,dist,release,documenti_firmati,__pycache__,*.pyc" `
             --no-rich-output `
             --yes *> $FletLog
         $FletExitCode = $LASTEXITCODE

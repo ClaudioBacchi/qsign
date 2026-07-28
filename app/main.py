@@ -18,13 +18,18 @@ APP_PUBLISHER = "Queen Srl"
 def run() -> None:
     """Start the Flet desktop application."""
     project_root = Path(__file__).resolve().parent.parent
-    _prepare_flet_runtime_metadata(project_root)
+    if not _is_flet_embedded_build():
+        _prepare_flet_runtime_metadata(project_root)
 
     import flet as ft
 
     from app.qsign_application import QSignApplication
 
-    target: Callable[[ft.Page], None] = QSignApplication().main
+    application = QSignApplication()
+
+    def target(page: ft.Page) -> None:
+        application.main(page)
+
     ft.run(
         main=target,
         before_main=_prepare_flet_window,
@@ -34,7 +39,7 @@ def run() -> None:
 
 def _prepare_flet_window(page: object) -> None:
     setattr(page, "title", APP_TITLE)
-    if sys.platform != "win32":
+    if sys.platform != "win32" or _is_flet_embedded_build():
         return
     icon_path = (
         Path(__file__).resolve().parent.parent
@@ -51,6 +56,10 @@ def _prepare_flet_window(page: object) -> None:
         args=(str(icon_path), APP_TITLE),
         daemon=True,
     ).start()
+
+
+def _is_flet_embedded_build() -> bool:
+    return bool(os.environ.get("FLET_PLATFORM"))
 
 
 def _prepare_flet_runtime_metadata(project_root: Path) -> None:
