@@ -248,6 +248,7 @@ class MainView:
         self._on_add_signature_box: Callable[[], None] | None = None
         self._on_remove_signature_box: Callable[[], None] | None = None
         self._on_retry_pending_erp_uploads: Callable[[], int] | None = None
+        self._on_verify_signature_setup: Callable[[SupabaseSettings], str] | None = None
         self._on_signature_area_click: Callable[[str | None], None] | None = None
         self._on_manual_signature_rect: (
             Callable[[float, float, float, float, float, float], None] | None
@@ -403,6 +404,7 @@ class MainView:
         on_add_signature_box: Callable[[], None] | None = None,
         on_remove_signature_box: Callable[[], None] | None = None,
         on_retry_pending_erp_uploads: Callable[[], int] | None = None,
+        on_verify_signature_setup: Callable[[SupabaseSettings], str] | None = None,
         on_signature_area_click: Callable[[str | None], None] | None = None,
     ) -> None:
         """Bind controller actions without exposing Flet outside the view."""
@@ -417,6 +419,7 @@ class MainView:
         self._on_add_signature_box = on_add_signature_box
         self._on_remove_signature_box = on_remove_signature_box
         self._on_retry_pending_erp_uploads = on_retry_pending_erp_uploads
+        self._on_verify_signature_setup = on_verify_signature_setup
         self._on_signature_area_click = on_signature_area_click
 
     def build(self) -> None:
@@ -3067,6 +3070,15 @@ class MainView:
             )
             set_result(result.message)
 
+        def verify_signature(_: object) -> None:
+            if self._on_verify_signature_setup is None:
+                set_result("Verifica firma non disponibile")
+                return
+            try:
+                set_result(self._on_verify_signature_setup(current_settings()))
+            except Exception as error:
+                set_result(f"Verifica firma fallita: {error}")
+
         supabase_tab_content = ft.Container(
             padding=ft.Padding(left=0, top=14, right=0, bottom=0),
             content=ft.Column(
@@ -3108,6 +3120,15 @@ class MainView:
                 controls=[
                     signature_capture_mode,
                     local_erp_port,
+                    ft.Row(
+                        controls=[
+                            ft.OutlinedButton(
+                                "Verifica",
+                                on_click=verify_signature,
+                            ),
+                        ],
+                        spacing=10,
+                    ),
                 ],
                 spacing=12,
             ),

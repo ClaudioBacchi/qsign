@@ -5,7 +5,10 @@ from typing import TYPE_CHECKING
 
 from app.pdf_viewer_controller import PDFViewerController
 from app.services.certificate_service import CertificateService
-from app.services.general_preferences_service import GeneralPreferencesService
+from app.services.general_preferences_service import (
+    GeneralPreferencesService,
+    SupabaseSettings,
+)
 from app.services.infinity_dms_client import InfinityDmsClient
 from app.services.local_erp_listener import LocalErpListener
 from services.anchors.anchor_detector import AnchorDetector
@@ -27,6 +30,7 @@ from services.templates.supabase_template_sync_service import (
     SupabaseTemplateSyncServiceError,
 )
 from services.wacom.providers.stu430_provider import STU430Provider
+from services.wacom.wacom_service import WacomProvider
 
 if TYPE_CHECKING:
     import flet as ft
@@ -116,6 +120,7 @@ class QSignApplication:
             document_flow_log_service=document_flow_log_service,
             on_general_preferences_saved=lambda _: start_or_restart_local_erp_listener(),
         )
+        signature_provider = self._create_signature_provider()
         controller = PDFViewerController(
             pdf_service=pdf_service,
             view=view,
@@ -126,7 +131,7 @@ class QSignApplication:
             general_preferences_service=general_preferences_service,
             infinity_dms_client=infinity_dms_client,
             template_sync_service=template_sync_service,
-            signature_provider=self._create_signature_provider(),
+            signature_provider=signature_provider,
         )
         view.bind_actions(
             on_open_document=controller.open_document,
@@ -142,6 +147,11 @@ class QSignApplication:
             on_retry_pending_erp_uploads=lambda: (
                 controller.retry_pending_erp_uploads()
                 + controller.retry_pending_erp_uploads("dist/signed")
+            ),
+            on_verify_signature_setup=lambda settings: self._verify_signature_setup(
+                certificate_service,
+                signature_provider,
+                settings,
             ),
             on_signature_area_click=controller.open_signature_dialog,
         )
@@ -168,6 +178,48 @@ class QSignApplication:
         except Exception as error:
             self._logger.warning("Wacom STU provider unavailable", error=str(error))
             return None
+
+    def _verify_signature_setup(
+        self,
+        certificate_service: CertificateService,
+        signature_provider: WacomProvider | None,
+        settings: SupabaseSettings,
+    ) -> str:
+        checks = [self._verify_active_certificate(certificate_service)]
+        if settings.signature_capture_mode == "wacom":
+            checks.append(self._verify_wacom_provider(signature_provider))
+        else:
+            checks.append("Wacom: non richiesto, metodo firma Mouse")
+        if all(check.startswith(("OK", "Wacom: non richiesto")) for check in checks):
+            return "Verifica firma OK - " + " | ".join(checks)
+        return "Verifica firma: " + " | ".join(checks)
+
+    def _verify_active_certificate(
+        self,
+        certificate_service: CertificateService,
+    ) -> str:
+        try:
+            certificate = certificate_service.get_active_certificate()
+        except Exception as error:
+            return f"Certificato: errore ({error})"
+        if certificate is None:
+            return "Certificato: nessun certificato attivo"
+        if "chiave privata" not in certificate.type.lower():
+            return "Certificato: chiave privata non disponibile"
+        return f"OK certificato: {certificate.name}"
+
+    def _verify_wacom_provider(self, signature_provider: WacomProvider | None) -> str:
+        if signature_provider is None:
+            return "Wacom: provider non disponibile"
+        try:
+            signature_provider.connect()
+        except Exception as error:
+            return f"Wacom: non disponibile ({error})"
+        try:
+            signature_provider.disconnect()
+        except Exception:
+            self._logger.warning("Wacom disconnect failed after verification")
+        return "OK Wacom: tavoletta rilevata"
 
     def _bind_shutdown(
         self,

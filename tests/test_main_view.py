@@ -2699,6 +2699,35 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(service.settings.local_erp_port, 55123)
         self.assertEqual(saved_settings[0].local_erp_port, 55123)
 
+    def test_general_preferences_verify_signature_uses_current_settings(self) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        checked_settings: list[SupabaseSettings] = []
+        view = MainView(page, general_preferences_service=service)
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+            on_verify_signature_setup=lambda settings: checked_settings.append(
+                settings
+            )
+            or "Verifica firma OK",
+        )
+
+        view.show_general_preferences()
+        _, signature_tab = _dialog_tab_contents(page.dialog)
+        _find_control(signature_tab, label="Metodo firma").value = "wacom"
+        _find_button(signature_tab, "Verifica").on_click(None)
+
+        self.assertEqual(checked_settings[-1].signature_capture_mode, "wacom")
+        self.assertEqual(
+            _general_preferences_result(page.dialog).content.value,
+            "Verifica firma OK",
+        )
+
     def test_general_preferences_checks_and_creates_supabase_table(self) -> None:
         page = FakePage()
         service = FakeGeneralPreferencesService()

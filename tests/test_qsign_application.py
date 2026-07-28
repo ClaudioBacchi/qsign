@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
+from app.services.certificate_service import CertificateInfo
+from app.services.general_preferences_service import SupabaseSettings
 from app.main import (
     _prepare_flet_runtime_metadata,
     _prepare_flet_window,
@@ -205,6 +207,37 @@ class QSignApplicationTests(unittest.TestCase):
         self.assertEqual(controller.shutdown_count, 1)
         self.assertEqual(page.window.destroy_count, 1)
 
+    def test_verify_signature_setup_reports_mouse_certificate_ready(self) -> None:
+        app = QSignApplication()
+        certificate_service = FakeCertificateService()
+
+        result = app._verify_signature_setup(
+            certificate_service,
+            None,
+            SupabaseSettings(signature_capture_mode="mouse"),
+        )
+
+        self.assertEqual(
+            result,
+            "Verifica firma OK - OK certificato: Mario Rossi | "
+            "Wacom: non richiesto, metodo firma Mouse",
+        )
+
+    def test_verify_signature_setup_reports_wacom_failure(self) -> None:
+        app = QSignApplication()
+
+        result = app._verify_signature_setup(
+            FakeCertificateService(),
+            FakeWacomProvider(error=RuntimeError("Nessuna tavoletta")),
+            SupabaseSettings(signature_capture_mode="wacom"),
+        )
+
+        self.assertEqual(
+            result,
+            "Verifica firma: OK certificato: Mario Rossi | "
+            "Wacom: non disponibile (Nessuna tavoletta)",
+        )
+
 
 class FakeWindow:
     def __init__(self) -> None:
@@ -265,6 +298,32 @@ class FakeView:
     def ask_close_application(self, on_confirm, on_cancel) -> None:
         self.close_callback = on_confirm
         self.cancel_close_callback = on_cancel
+
+
+class FakeCertificateService:
+    def get_active_certificate(self) -> CertificateInfo:
+        return CertificateInfo(
+            name="Mario Rossi",
+            type="Store Windows - chiave privata",
+            valid_until="2029-01-01",
+            thumbprint="AABB",
+        )
+
+
+class FakeWacomProvider:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.disconnect_count = 0
+
+    def connect(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+    def disconnect(self) -> None:
+        self.disconnect_count += 1
+
+    def capture_signature(self) -> object:
+        raise AssertionError("diagnostic must not capture signatures")
 
 
 if __name__ == "__main__":
