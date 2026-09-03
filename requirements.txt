@@ -1,3 +1,4 @@
 flet==0.85.3
 flet-desktop==0.85.3
+pyHanko==0.35.2
 pymupdf==1.28.0

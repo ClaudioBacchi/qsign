@@ -1564,18 +1564,26 @@ class MainViewTests(unittest.TestCase):
             self.assertEqual(len(table.rows), 1)
             row = table.rows[0]
             name_button = row.cells[0].content.content
-            self.assertEqual(name_button.content, "contratto_signed.pdf")
+            self.assertEqual(name_button.content.value, "contratto_signed.pdf")
+            self.assertEqual(name_button.tooltip, "contratto_signed.pdf")
             self.assertRegex(
                 row.cells[1].content.content.value,
                 r"\d{2}/\d{2}/\d{4} ",
             )
-            open_button = row.cells[2].content
+            open_button = row.cells[2].content.content
             self.assertEqual(open_button.controls[0].tooltip, "Apri documento firmato")
             self.assertEqual(open_button.controls[1].tooltip, "Apri cartella")
 
             open_button.controls[0].on_click(None)
 
             self.assertEqual(page.launched_urls, [signed_pdf.resolve().as_uri()])
+
+            name_button.on_double_tap(None)
+
+            self.assertEqual(
+                page.launched_urls,
+                [signed_pdf.resolve().as_uri(), signed_pdf.resolve().as_uri()],
+            )
 
     def test_signed_history_previews_selected_document_and_opens_folder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1593,7 +1601,7 @@ class MainViewTests(unittest.TestCase):
             table = table_container.content.controls[0]
             row = table.rows[0]
 
-            row.cells[0].content.content.on_click(None)
+            row.cells[0].content.content.on_tap(None)
 
             preview_controls = preview_panel.content.controls
             self.assertEqual(preview_controls[0].value, "contratto_signed.pdf")
@@ -1602,7 +1610,7 @@ class MainViewTests(unittest.TestCase):
                 preview_controls[2].content.src.startswith("data:image/png;base64,")
             )
 
-            row.cells[2].content.controls[1].on_click(None)
+            row.cells[2].content.content.controls[1].on_click(None)
 
             self.assertEqual(page.launched_urls, [signed_pdf.parent.resolve().as_uri()])
 
@@ -1663,7 +1671,7 @@ class MainViewTests(unittest.TestCase):
             table = table_container.content.controls[0]
             self.assertEqual(len(table.rows), 1)
             self.assertEqual(
-                table.rows[0].cells[0].content.content.content,
+                table.rows[0].cells[0].content.content.content.value,
                 "beta_signed.pdf",
             )
 
@@ -1674,7 +1682,7 @@ class MainViewTests(unittest.TestCase):
 
             table = table_container.content.controls[0]
             self.assertEqual(
-                [row.cells[0].content.content.content for row in table.rows],
+                [row.cells[0].content.content.content.value for row in table.rows],
                 ["alpha_signed.pdf", "beta_signed.pdf"],
             )
 

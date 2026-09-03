@@ -1,6 +1,6 @@
 {
-  "code": "LEARNED_REGISTO_IMPRESE_CESENA_SALUTEELAVORO_AZIENDA_SERVIZI_SOCIETA_MEDICO",
-  "name": "Template provvisorio learned_registo_imprese_cesena_saluteelavoro_azienda_servizi_societa_medico",
+  "code": "LEARNED_PERTICARI_CAMPI_ELETTROMAGNETICI_AZIENDA_SOCIETA_LAVORATORE_SESSO_LUOGO",
+  "name": "Template provvisorio learned_perticari_campi_elettromagnetici_azienda_societa_lavoratore_sesso_luogo",
   "state": "draft",
   "version": "0.1.0",
   "priority": 5,
@@ -10,7 +10,7 @@
     "recognition_threshold": 80
   },
   "description": "Template creato dal primo flusso manuale QSign.",
-  "template_id": "learned_registo_imprese_cesena_saluteelavoro_azienda_servizi_societa_medico",
+  "template_id": "learned_perticari_campi_elettromagnetici_azienda_societa_lavoratore_sesso_luogo",
   "anchor_rules": [],
   "document_type": "manual_signature_flow",
   "document_rules": [],
@@ -19,11 +19,11 @@
     {
       "role": "signer",
       "side": "manual",
-      "width": 159.0,
-      "height": 51.0,
+      "width": 191.0,
+      "height": 81.0,
       "required": true,
-      "x_offset": 371.5,
-      "y_offset": 640.0,
+      "x_offset": 171.5,
+      "y_offset": 589.0,
       "alignment": "manual",
       "anchor_id": "manual",
       "page_index": 0,
@@ -37,7 +37,7 @@
       "rule_id": "manual-filename-stem",
       "required": false,
       "rule_type": "literal",
-      "expression": "851002_e3sc3pvmr6"
+      "expression": "fd0244ee03d744eaae0227938be2a654_CE_GHINASSI_ENNIO MASSIMO_20260226"
     },
     {
       "scope": "document",
@@ -45,7 +45,7 @@
       "rule_id": "manual-recognition-phrase",
       "required": false,
       "rule_type": "literal",
-      "expression": "Salute e Lavoro - Società Cooperativa Via Meucci, 18 47122 Forlì P. IVA C.F. n. iscr. Registo delle imprese di Forlì - Cesena: 03455980403"
+      "expression": "Salute e Lavoro Società Cooperativa Ambulatori Via Meucci, 18 - 47122 Forlì (FC) Tel. 0543 798337 Via G. Perticari, 2/A - 47035 Gambettola (FC)"
     },
     {
       "scope": "document",
@@ -53,7 +53,7 @@
       "rule_id": "manual-structural-signature",
       "required": true,
       "rule_type": "literal",
-      "expression": "registo imprese cesena saluteelavoro azienda servizi societa medico competente antonina callea marina romani giancarlo giovane pezzi"
+      "expression": "perticari campi elettromagnetici azienda societa lavoratore sesso luogo nascita ravenna codice fiscale ghnnms59r04h199l subito incidenti caccia"
     },
     {
       "scope": "document",
@@ -61,7 +61,7 @@
       "rule_id": "manual-visual-signature",
       "required": true,
       "rule_type": "visual_hash",
-      "expression": "00000000fffffffec004a006c11ffb867ffffffc2c7dffe000f0007871ec0000000000007fb003d81ffbf30003f000000fae00000007c000000fe000006fda003ff0f0003c0000003ffcd0503fffe0007ffecb20000000007fe07ff003c017c0000000000210000007fc00000004000000000000fffffffefffffffe7ffffffc"
+      "expression": "ff00000078000000fff0000000000000ffc0000067ff80007ff801f077f000007fc000007fe00000000000007f8000007ffc00007fc000007ffc00007fff00007e0000007fffff007f800000000000007ff0000020000000000701f8781fc1f87ffffdfc000000000000000000000000000000000000000000000000fffffffe"
     },
     {
       "scope": "document",
@@ -69,7 +69,7 @@
       "rule_id": "manual-keyword-1",
       "required": false,
       "rule_type": "literal",
-      "expression": "registo"
+      "expression": "perticari"
     },
     {
       "scope": "document",
@@ -77,7 +77,7 @@
       "rule_id": "manual-keyword-2",
       "required": false,
       "rule_type": "literal",
-      "expression": "imprese"
+      "expression": "campi"
     },
     {
       "scope": "document",
@@ -85,7 +85,7 @@
       "rule_id": "manual-keyword-3",
       "required": false,
       "rule_type": "literal",
-      "expression": "cesena"
+      "expression": "elettromagnetici"
     },
     {
       "scope": "document",
@@ -93,7 +93,7 @@
       "rule_id": "manual-keyword-4",
       "required": false,
       "rule_type": "literal",
-      "expression": "saluteelavoro"
+      "expression": "azienda"
     },
     {
       "scope": "document",
@@ -101,7 +101,7 @@
       "rule_id": "manual-keyword-5",
       "required": false,
       "rule_type": "literal",
-      "expression": "azienda"
+      "expression": "societa"
     },
     {
       "scope": "document",
@@ -109,7 +109,7 @@
       "rule_id": "manual-keyword-6",
       "required": false,
       "rule_type": "literal",
-      "expression": "servizi"
+      "expression": "lavoratore"
     },
     {
       "scope": "document",
@@ -117,7 +117,7 @@
       "rule_id": "manual-keyword-7",
       "required": false,
       "rule_type": "literal",
-      "expression": "societa"
+      "expression": "sesso"
     },
     {
       "scope": "document",
@@ -125,7 +125,7 @@
       "rule_id": "manual-keyword-8",
       "required": false,
       "rule_type": "literal",
-      "expression": "medico"
+      "expression": "luogo"
     }
   ]
 }

@@ -9,6 +9,7 @@ build/
 dist/
 release/
 logs/
+documenti_firmati/
 config/preferences.json
 config/preferences.json.bak
 *.pyc

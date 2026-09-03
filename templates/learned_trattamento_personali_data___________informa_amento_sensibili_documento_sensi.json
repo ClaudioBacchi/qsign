@@ -13,7 +13,7 @@
     {
       "rule_id": "manual-filename-stem",
       "rule_type": "literal",
-      "expression": "2b24fe8895314d2c9d886080bb4bd0f2_privacy_000000000052050_GHINASSI_ENNIO_MASSIMO_10_",
+      "expression": "614d61d58226489f8700d382574dab79_privacy_000000000052050_GHINASSI_ENNIO_MASSIMO_3_",
       "scope": "document",
       "required": false,
       "weight": 0.25
@@ -107,41 +107,31 @@
       "weight": 1.25
     }
   ],
-  "anchor_rules": [
-    {
-      "anchor_id": "manual-learned-anchor",
-      "name": "Anchor appreso manualmente",
-      "search_type": "text",
-      "expression": "In fede L’interessato",
-      "scope": "document",
-      "occurrence_policy": "first",
-      "required": false
-    }
-  ],
+  "anchor_rules": [],
   "placement_rules": [
-    {
-      "placement_id": "relative-signature",
-      "role": "signer",
-      "anchor_id": "manual-learned-anchor",
-      "side": "relative",
-      "alignment": "manual",
-      "x_offset": -62.939849853515625,
-      "y_offset": 31.5714111328125,
-      "width": 188.0,
-      "height": 58.0,
-      "page_index": null,
-      "required": true
-    },
     {
       "placement_id": "manual-signature",
       "role": "signer",
       "anchor_id": "manual",
       "side": "manual",
       "alignment": "manual",
-      "x_offset": 337.5,
-      "y_offset": 479.0,
-      "width": 188.0,
-      "height": 58.0,
+      "x_offset": 323.5,
+      "y_offset": 448.0,
+      "width": 211.0,
+      "height": 128.0,
+      "page_index": 1,
+      "required": true
+    },
+    {
+      "placement_id": "manual-signature-2",
+      "role": "signer",
+      "anchor_id": "manual",
+      "side": "manual",
+      "alignment": "manual",
+      "x_offset": 30.5,
+      "y_offset": 435.0,
+      "width": 220.0,
+      "height": 132.0,
       "page_index": 1,
       "required": true
     }

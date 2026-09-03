@@ -2744,8 +2744,8 @@ class MainView:
         selected_path = {"path": documents[0] if documents else None}
         preview_image = ft.Image(
             src="",
-            width=260,
-            height=360,
+            width=235,
+            height=315,
             fit=ft.BoxFit.CONTAIN,
             visible=False,
         )
@@ -2772,16 +2772,16 @@ class MainView:
             on_click=lambda _: self._open_signed_folder(selected_path["path"]),
         )
         preview_panel = ft.Container(
-            width=300,
-            padding=ft.Padding(left=14, top=0, right=0, bottom=0),
+            width=270,
+            padding=ft.Padding(left=10, top=0, right=0, bottom=0),
             content=ft.Column(
                 controls=[
                     preview_title,
                     preview_meta,
                     ft.Container(
                         content=preview_image,
-                        width=280,
-                        height=370,
+                        width=250,
+                        height=325,
                         alignment=ft.Alignment(0, 0),
                         bgcolor=ft.Colors.GREY_100,
                         border=ft.Border(
@@ -2849,7 +2849,7 @@ class MainView:
                     else "Seleziona un documento"
                 )
             else:
-                preview_title.value = path.name
+                preview_title.value = self._compact_filename(path.name, max_length=44)
                 preview_meta.value = self._format_file_created_at(path)
                 preview_image.src = self._signed_history_preview_data_uri(path)
                 preview_image.visible = bool(preview_image.src)
@@ -2904,21 +2904,29 @@ class MainView:
                                         on_click=lambda _: sort_by("created_at"),
                                     )
                                 ),
-                                ft.DataColumn(ft.Text("Azioni")),
+                                ft.DataColumn(ft.Text("")),
                             ],
                             rows=[
                                 ft.DataRow(
                                     cells=[
                                         ft.DataCell(
                                             ft.Container(
-                                                content=ft.TextButton(
-                                                    path.name,
-                                                    on_click=lambda _, item=path: select_document(
+                                                content=ft.GestureDetector(
+                                                    content=ft.Text(
+                                                        self._compact_filename(path.name),
+                                                        color=ft.Colors.BLUE_700,
+                                                    ),
+                                                    tooltip=path.name,
+                                                    mouse_cursor=ft.MouseCursor.CLICK,
+                                                    on_tap=lambda _, item=path: select_document(
+                                                        item
+                                                    ),
+                                                    on_double_tap=lambda _, item=path: self._open_signed_file(
                                                         item
                                                     ),
                                                 ),
                                                 alignment=ft.Alignment(-1, 0),
-                                                width=420,
+                                                width=320,
                                             )
                                         ),
                                         ft.DataCell(
@@ -2931,32 +2939,35 @@ class MainView:
                                             )
                                         ),
                                         ft.DataCell(
-                                            ft.Row(
-                                                controls=[
-                                                    ft.IconButton(
-                                                        icon=ft.Icons.OPEN_IN_NEW,
-                                                        tooltip="Apri documento firmato",
-                                                        on_click=lambda _, item=path: self._open_signed_file(
-                                                            item
+                                            ft.Container(
+                                                width=96,
+                                                content=ft.Row(
+                                                    controls=[
+                                                        ft.IconButton(
+                                                            icon=ft.Icons.OPEN_IN_NEW,
+                                                            tooltip="Apri documento firmato",
+                                                            on_click=lambda _, item=path: self._open_signed_file(
+                                                                item
+                                                            ),
                                                         ),
-                                                    ),
-                                                    ft.IconButton(
-                                                        icon=ft.Icons.FOLDER_OPEN,
-                                                        tooltip="Apri cartella",
-                                                        on_click=lambda _, item=path: self._open_signed_folder(
-                                                            item
+                                                        ft.IconButton(
+                                                            icon=ft.Icons.FOLDER_OPEN,
+                                                            tooltip="Apri cartella",
+                                                            on_click=lambda _, item=path: self._open_signed_folder(
+                                                                item
+                                                            ),
                                                         ),
-                                                    ),
-                                                ],
-                                                spacing=0,
-                                                tight=True,
+                                                    ],
+                                                    spacing=0,
+                                                    tight=True,
+                                                ),
                                             )
                                         ),
                                     ]
                                 )
                                 for path in rows
                             ],
-                            column_spacing=24,
+                            column_spacing=12,
                         )
                     ],
                     spacing=0,
@@ -2985,8 +2996,8 @@ class MainView:
         dialog = ft.AlertDialog(
             title=ft.Text("Storico documenti firmati"),
             content=ft.Container(
-                width=980,
-                height=520,
+                width=900,
+                height=500,
                 content=ft.Column(
                     controls=[
                         search,
@@ -4479,6 +4490,14 @@ class MainView:
                 document.close()
         except Exception:
             return ""
+
+    @staticmethod
+    def _compact_filename(filename: str, max_length: int = 52) -> str:
+        if len(filename) <= max_length:
+            return filename
+        suffix_length = max(12, max_length // 2)
+        prefix_length = max_length - suffix_length - 3
+        return f"{filename[:prefix_length]}...{filename[-suffix_length:]}"
 
     def _open_signed_file(self, path: Path | None) -> None:
         if path is None:
