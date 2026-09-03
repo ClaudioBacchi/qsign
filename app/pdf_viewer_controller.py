@@ -20,6 +20,7 @@ from services.anchors.anchor_models import (
     AnchorSearchRule,
 )
 from services.pdf.pdf_service import PDFService
+from services.pdf.pdf_fill import PDFSignatureFillElement, PDFTextFillElement
 from services.pdf.pdf_provider import PdfProvider
 from services.pdf.pdf_signature import SignatureArea
 from services.signature.signature_service import CapturedSignature
@@ -120,6 +121,28 @@ class PDFViewerView(Protocol):
         canvas_height: float | None = None,
     ) -> None: ...
 
+    def ask_pdf_fill_text(
+        self,
+        on_confirm: "PDFTextFillConfirmCallback",
+        on_cancel: "SignatureEventCallback",
+        *,
+        initial_text: str = "",
+        initial_font_size: float = 12.0,
+    ) -> None: ...
+
+    def ask_remove_pdf_fill_element(
+        self,
+        label: str,
+        on_confirm: "SignatureEventCallback",
+        on_cancel: "SignatureEventCallback",
+    ) -> None: ...
+
+    def pick_pdf_fill_signature_image(
+        self,
+        on_selected: "SignatureConfirmCallback",
+        on_cancel: "SignatureEventCallback",
+    ) -> None: ...
+
     def clear_document(self) -> None: ...
 
     def show_error(self, message: str) -> None: ...
@@ -166,6 +189,19 @@ class AnchorOverlay:
     signature_content: bytes | None = None
     signature_media_type: str = "image/svg+xml"
     target_id: str | None = None
+    text_content: str = ""
+    font_size: float = 12.0
+
+
+@dataclass(frozen=True, slots=True)
+class PDFFillTarget:
+    target_id: str
+    kind: str
+    rectangle: Rectangle
+    page_index: int
+    text: str = ""
+    font_size: float = 12.0
+    signature: CapturedSignature | None = None
 
 
 class SaveTemplateCallback(Protocol):
@@ -200,6 +236,10 @@ class SignatureConfirmCallback(Protocol):
 
 class SignatureEventCallback(Protocol):
     def __call__(self) -> None: ...
+
+
+class PDFTextFillConfirmCallback(Protocol):
+    def __call__(self, text: str, font_size: float) -> None: ...
 
 
 class PDFViewerController:
@@ -261,7 +301,19 @@ class PDFViewerController:
         self._wacom_capture_generation = 0
         self._wacom_capture_active = False
         self._signed_pdf_save_active = False
+        self._pdf_fill_targets: tuple[PDFFillTarget, ...] = ()
+        self._pdf_fill_tool: str | None = None
+        self._pending_pdf_fill_rectangle: Rectangle | None = None
+        self._pending_pdf_fill_page_index: int | None = None
+        self._filled_pdf_save_active = False
         self.state = PDFViewerState()
+
+    def _reset_pdf_fill_state(self) -> None:
+        self._pdf_fill_targets = ()
+        self._pdf_fill_tool = None
+        self._pending_pdf_fill_rectangle = None
+        self._pending_pdf_fill_page_index = None
+        self._filled_pdf_save_active = False
 
     def open_document(
         self,
@@ -281,6 +333,7 @@ class PDFViewerController:
     ) -> None:
         try:
             self._has_unsaved_signature = False
+            self._reset_pdf_fill_state()
             self._erp_upload_context = erp_upload_context
             document = self._pdf_service.open_document(Path(path))
             self._document_flow_name = self._document_flow_name_for_document(
@@ -311,6 +364,7 @@ class PDFViewerController:
             self._has_unsaved_signature = False
             self._wacom_capture_active = False
             self._signed_pdf_save_active = False
+            self._reset_pdf_fill_state()
             self._workflow_status = "Documento non aperto"
             self._view.clear_document()
             self._view.show_error(str(error))
@@ -343,6 +397,7 @@ class PDFViewerController:
             self._has_unsaved_signature = False
             self._wacom_capture_active = False
             self._signed_pdf_save_active = False
+            self._reset_pdf_fill_state()
             self._workflow_status = "Apri un PDF"
             self._view.set_manual_signature_mode(False)
             self._view.clear_document()
@@ -369,6 +424,7 @@ class PDFViewerController:
         self._has_unsaved_signature = False
         self._wacom_capture_active = False
         self._signed_pdf_save_active = False
+        self._reset_pdf_fill_state()
         self._workflow_status = "Apri un PDF"
 
     def previous_page(self) -> None:
@@ -720,6 +776,9 @@ class PDFViewerController:
         image_width: float,
         image_height: float,
     ) -> None:
+        if self._pdf_fill_tool is not None:
+            self._set_pdf_fill_rectangle(left, top, width, height, image_width, image_height)
+            return
         document = self._pdf_service.current_document
         if document is None or not document.page_sizes:
             return
@@ -1081,6 +1140,384 @@ class PDFViewerController:
         if refresh_again:
             self._view.defer_viewer_refresh(self._render_current_page)
 
+    def start_pdf_fill_text(self) -> None:
+        if self._pdf_service.current_document is None:
+            self._view.show_error("Apri prima un PDF")
+            return
+        self._cancel_wacom_capture()
+        self._pdf_fill_tool = "text"
+        self._workflow_status = "Compila PDF: disegna l'area testo"
+        self._view.set_manual_signature_mode(True)
+        self._render_current_page()
+
+    def start_pdf_fill_signature(self) -> None:
+        if self._pdf_service.current_document is None:
+            self._view.show_error("Apri prima un PDF")
+            return
+        if self._general_preferences_service is None:
+            self._view.show_error("Preferenze firma grafica non disponibili")
+            return
+        signature = self._general_preferences_service.get_pdf_fill_signature()
+        if signature is None:
+            self._view.show_status("scegli una firma grafica per Compila PDF")
+            self._view.pick_pdf_fill_signature_image(
+                self._save_pdf_fill_signature_preference_and_continue,
+                lambda: self._view.show_status("firma grafica non selezionata"),
+            )
+            return
+        self._cancel_wacom_capture()
+        self._pdf_fill_tool = "signature"
+        self._workflow_status = "Compila PDF: disegna l'area firma grafica"
+        self._view.set_manual_signature_mode(True)
+        self._render_current_page()
+
+    def _save_pdf_fill_signature_preference_and_continue(
+        self, signature: CapturedSignature
+    ) -> None:
+        if self._general_preferences_service is None:
+            self._view.show_error("Preferenze firma grafica non disponibili")
+            return
+        try:
+            self._general_preferences_service.save_pdf_fill_signature(signature)
+        except Exception as error:
+            self._view.show_error(str(error))
+            return
+        self._view.show_status("firma grafica salvata")
+        self.start_pdf_fill_signature()
+
+    def _set_pdf_fill_rectangle(
+        self,
+        left: float,
+        top: float,
+        width: float,
+        height: float,
+        image_width: float,
+        image_height: float,
+    ) -> None:
+        document = self._pdf_service.current_document
+        if document is None or not document.page_sizes:
+            return
+        if width < 8 or height < 8:
+            self._view.show_error("Area Compila PDF troppo piccola")
+            return
+
+        page_size = document.page_sizes[self.state.page_index]
+        scale_x = page_size.width / image_width
+        scale_y = page_size.height / image_height
+        rectangle = Rectangle(
+            left * scale_x,
+            top * scale_y,
+            (left + width) * scale_x,
+            (top + height) * scale_y,
+        )
+        tool = self._pdf_fill_tool
+        self._pending_pdf_fill_rectangle = rectangle
+        self._pending_pdf_fill_page_index = self.state.page_index
+        self._pdf_fill_tool = None
+        self._view.set_manual_signature_mode(False)
+        if tool == "text":
+            self._view.ask_pdf_fill_text(
+                self._add_pdf_fill_text,
+                self._cancel_pdf_fill_element,
+            )
+            return
+        if tool == "signature":
+            self._add_pdf_fill_signature()
+
+    def _add_pdf_fill_text(self, text: str, font_size: float) -> None:
+        rectangle = self._pending_pdf_fill_rectangle
+        page_index = self._pending_pdf_fill_page_index
+        self._pending_pdf_fill_rectangle = None
+        self._pending_pdf_fill_page_index = None
+        clean_text = text.strip()
+        if rectangle is None or page_index is None:
+            return
+        if not clean_text:
+            self._view.show_status("testo non inserito")
+            return
+        target = PDFFillTarget(
+            target_id=self._next_pdf_fill_target_id(),
+            kind="text",
+            rectangle=rectangle,
+            page_index=page_index,
+            text=clean_text,
+            font_size=max(6.0, min(77.0, float(font_size))),
+        )
+        self._pdf_fill_targets = (*self._pdf_fill_targets, target)
+        self._workflow_status = "Compila PDF: testo aggiunto"
+        self._render_current_page()
+
+    def _add_pdf_fill_signature(self) -> None:
+        rectangle = self._pending_pdf_fill_rectangle
+        page_index = self._pending_pdf_fill_page_index
+        self._pending_pdf_fill_rectangle = None
+        self._pending_pdf_fill_page_index = None
+        if rectangle is None or page_index is None:
+            return
+        if self._general_preferences_service is None:
+            self._view.show_error("Preferenze firma grafica non disponibili")
+            return
+        signature = self._general_preferences_service.get_pdf_fill_signature()
+        if signature is None:
+            self._view.show_error("Firma grafica per Compila PDF non configurata")
+            return
+        target = PDFFillTarget(
+            target_id=self._next_pdf_fill_target_id(),
+            kind="signature",
+            rectangle=rectangle,
+            page_index=page_index,
+            signature=signature,
+        )
+        self._pdf_fill_targets = (*self._pdf_fill_targets, target)
+        self._workflow_status = "Compila PDF: firma grafica aggiunta"
+        self._render_current_page()
+
+    def _cancel_pdf_fill_element(self) -> None:
+        self._pending_pdf_fill_rectangle = None
+        self._pending_pdf_fill_page_index = None
+        self._pdf_fill_tool = None
+        self._view.set_manual_signature_mode(False)
+        self._view.show_status("Compila PDF annullato")
+        self._render_current_page()
+
+    def remove_pdf_fill_element(self, target_id: str | None) -> None:
+        target = self._pdf_fill_target_by_id(target_id)
+        if target is None:
+            self._view.show_error("Elemento Compila PDF non disponibile")
+            return
+        label = "testo" if target.kind == "text" else "firma grafica"
+        self._view.ask_remove_pdf_fill_element(
+            label,
+            lambda target_id=target.target_id: self._remove_pdf_fill_element_now(target_id),
+            lambda: self._view.show_status("rimozione Compila PDF annullata"),
+        )
+
+    def _remove_pdf_fill_element_now(self, target_id: str) -> None:
+        before_count = len(self._pdf_fill_targets)
+        self._pdf_fill_targets = tuple(
+            target for target in self._pdf_fill_targets if target.target_id != target_id
+        )
+        if len(self._pdf_fill_targets) == before_count:
+            self._view.show_error("Elemento Compila PDF non disponibile")
+            return
+        self._workflow_status = "Compila PDF: elemento rimosso"
+        self._logger.info("PDF fill element removed", target_id=target_id)
+        self._render_current_page()
+
+    def _pdf_fill_target_by_id(self, target_id: str | None) -> PDFFillTarget | None:
+        if target_id is None:
+            return None
+        for target in self._pdf_fill_targets:
+            if target.target_id == target_id:
+                return target
+        return None
+
+    def save_filled_pdf(self) -> None:
+        document = self._pdf_service.current_document
+        if document is None:
+            self._view.show_error("Nessun PDF aperto")
+            return
+        if self._filled_pdf_save_active:
+            self._view.show_status("salvataggio PDF compilato in corso")
+            return
+        if not self._pdf_fill_targets:
+            self._view.show_error("Nessun elemento Compila PDF da salvare")
+            return
+        signed_targets = tuple(
+            target for target in self._signature_targets if target.signature is not None
+        )
+        unsigned_target = self._first_unsigned_signature_target()
+        if signed_targets and unsigned_target is not None:
+            missing_count = sum(
+                1
+                for target in self._signature_targets
+                if not self._signature_target_is_complete(target)
+            )
+
+            def sign_missing() -> None:
+                self._select_signature_target(unsigned_target.target_id)
+                if self._signature_page_index is not None:
+                    self.state.page_index = self._signature_page_index
+                self._workflow_status = "Completa le zone firma mancanti"
+                self._has_unsaved_signature = True
+                self._render_current_page()
+                self.open_signature_dialog(unsigned_target.target_id)
+
+            self._view.ask_incomplete_signature_boxes(
+                missing_count,
+                sign_missing,
+                self.save_filled_pdf_with_incomplete_signatures,
+                lambda: self._view.show_status("salvataggio annullato"),
+            )
+            return
+        self._save_filled_pdf_now(signed_targets)
+
+    def save_filled_pdf_with_incomplete_signatures(self) -> None:
+        signed_targets = tuple(
+            target for target in self._signature_targets if target.signature is not None
+        )
+        self._save_filled_pdf_now(signed_targets)
+
+    def _save_filled_pdf_now(
+        self,
+        signed_targets: tuple[SignatureTarget, ...] = (),
+    ) -> None:
+        document = self._pdf_service.current_document
+        if document is None:
+            self._view.show_error("Nessun PDF aperto")
+            return
+        elements = (
+            *(
+                self._signature_fill_element_from_target(target)
+                for target in signed_targets
+            ),
+            *(
+                self._pdf_fill_element_from_target(target)
+                for target in self._pdf_fill_targets
+            ),
+        )
+        erp_upload_context = self._erp_upload_context
+        flow_document_name = (
+            self._document_flow_name
+            or self._document_flow_name_for_document(document, erp_upload_context)
+        )
+        self._filled_pdf_save_active = True
+        self._set_save_action_enabled(False)
+        self._view.show_status("salvataggio PDF compilato in corso")
+
+        def save() -> None:
+            try:
+                destination = self._pdf_service.save_filled_pdf(elements)
+            except Exception as error:
+                self._logger.exception("Unable to save filled PDF")
+                self._view.run_ui_task(
+                    lambda error=error: self._finish_filled_pdf_save_with_error(error)
+                )
+                return
+            self._view.run_ui_task(
+                lambda: self._finish_filled_pdf_save(
+                    Path(destination),
+                    erp_upload_context,
+                    flow_document_name,
+                )
+            )
+
+        self._view.run_background_task(save)
+
+    def _finish_filled_pdf_save_with_error(self, error: Exception) -> None:
+        self._filled_pdf_save_active = False
+        self._render_current_page()
+        self._set_save_action_enabled(True)
+        self._view.show_error(str(error))
+
+    def _finish_filled_pdf_save(
+        self,
+        destination: Path,
+        erp_upload_context: ErpSignedDocumentUploadContext | None,
+        flow_document_name: str,
+    ) -> None:
+        page_index = self.state.page_index
+        zoom = self.state.zoom
+        self._filled_pdf_save_active = False
+        self._pdf_fill_targets = ()
+        self._pdf_fill_tool = None
+        self._pending_pdf_fill_rectangle = None
+        self._pending_pdf_fill_page_index = None
+        self._workflow_status = f"PDF compilato salvato: {destination}"
+        self._logger.info("Filled PDF saved", destination=str(destination))
+        self._open_saved_filled_pdf(destination, page_index=page_index, zoom=zoom)
+        self._view.show_document_flow_signed(flow_document_name)
+        self._view.show_status(f"PDF compilato salvato: {destination}")
+        self._queue_saved_pdf_erp_upload(
+            Path(destination),
+            erp_upload_context,
+            flow_document_name,
+        )
+
+    def _open_saved_filled_pdf(
+        self,
+        destination: Path,
+        *,
+        page_index: int,
+        zoom: float,
+    ) -> None:
+        try:
+            document = self._pdf_service.open_document(destination)
+        except Exception as error:
+            self._logger.exception(
+                "Unable to reopen filled PDF",
+                destination=str(destination),
+            )
+            self._view.show_error(
+                f"PDF compilato salvato, ma non riaperto: {error}"
+            )
+            return
+
+        self._canonical_document = None
+        self._anchor_matches = ()
+        self._signature_anchor_match = None
+        self._signature_rectangle = None
+        self._signature_page_index = None
+        self._captured_signature = None
+        self._signature_targets = ()
+        self._selected_signature_target_id = None
+        self._add_signature_box_mode = False
+        self._recognized_template = None
+        self._pending_manual_rectangle_restore = None
+        self._erp_upload_context = None
+        self._document_flow_name = document.filename
+        self._has_unsaved_signature = False
+        self._wacom_capture_active = False
+        self._signed_pdf_save_active = False
+        self._view.set_manual_signature_mode(False)
+        self.state = PDFViewerState(
+            page_index=min(max(0, page_index), max(0, document.page_count - 1)),
+            page_count=document.page_count,
+            zoom=zoom,
+        )
+        self._render_current_page()
+
+    def _next_pdf_fill_target_id(self) -> str:
+        return f"fill-{len(self._pdf_fill_targets) + 1}"
+
+    @staticmethod
+    def _signature_fill_element_from_target(
+        target: SignatureTarget,
+    ) -> PDFSignatureFillElement:
+        if target.signature is None:
+            raise ValueError("Firma acquisita mancante")
+        return PDFSignatureFillElement(
+            page_index=target.page_index,
+            rectangle=target.rectangle,
+            signature=target.signature,
+        )
+
+    @staticmethod
+    def _pdf_fill_element_from_target(
+        target: PDFFillTarget,
+    ) -> PDFTextFillElement | PDFSignatureFillElement:
+        if target.kind == "text":
+            return PDFTextFillElement(
+                page_index=target.page_index,
+                rectangle=target.rectangle,
+                text=target.text,
+                font_size=target.font_size,
+            )
+        if target.signature is None:
+            raise ValueError("Firma grafica Compila PDF mancante")
+        return PDFSignatureFillElement(
+            page_index=target.page_index,
+            rectangle=target.rectangle,
+            signature=target.signature,
+        )
+
+    def save_pdf(self) -> None:
+        """Save the active document workflow through a single UI action."""
+        if self._pdf_fill_targets:
+            self.save_filled_pdf()
+            return
+        self.save_signed_pdf()
+
     def save_signed_pdf(self, allow_incomplete: bool = False) -> None:
         document = self._pdf_service.current_document
         if document is None:
@@ -1220,7 +1657,7 @@ class PDFViewerController:
         self._view.clear_document()
         self._view.show_document_flow_signed(flow_document_name)
         self._view.show_status(f"PDF firmato salvato: {destination}")
-        self._queue_signed_pdf_erp_upload(
+        self._queue_saved_pdf_erp_upload(
             Path(destination),
             erp_upload_context,
             flow_document_name,
@@ -1231,7 +1668,7 @@ class PDFViewerController:
         if callable(set_enabled):
             set_enabled(enabled)
 
-    def _queue_signed_pdf_erp_upload(
+    def _queue_saved_pdf_erp_upload(
         self,
         destination: Path,
         context: ErpSignedDocumentUploadContext | None,
@@ -1241,14 +1678,14 @@ class PDFViewerController:
             return
         if self._general_preferences_service is None or self._infinity_dms_client is None:
             self._logger.warning(
-                "ERP signed document upload skipped",
+                "ERP saved document upload skipped",
                 document_id=context.document_id,
                 reason="services_not_configured",
             )
             return
         if not context.logical_dir.strip() or not context.logical_name.strip():
             self._logger.warning(
-                "ERP signed document upload skipped",
+                "ERP saved document upload skipped",
                 document_id=context.document_id,
                 logical_dir_configured=bool(context.logical_dir.strip()),
                 logical_name_configured=bool(context.logical_name.strip()),
@@ -1257,7 +1694,7 @@ class PDFViewerController:
         self._write_pending_erp_upload(destination, context, flow_document_name)
 
         def upload() -> None:
-            self._upload_signed_pdf_to_erp(destination, context, flow_document_name)
+            self._upload_saved_pdf_to_erp(destination, context, flow_document_name)
 
         self._view.run_background_task(upload)
 
@@ -1278,8 +1715,8 @@ class PDFViewerController:
             destination, context, flow_document_name = pending
             if not destination.is_file():
                 self._logger.warning(
-                    "Pending ERP signed document upload skipped",
-                    reason="signed_file_missing",
+                    "Pending ERP saved document upload skipped",
+                    reason="saved_file_missing",
                     sidecar=str(sidecar),
                     destination=str(destination),
                 )
@@ -1290,7 +1727,7 @@ class PDFViewerController:
                 upload_context: ErpSignedDocumentUploadContext = context,
                 document_name: str = flow_document_name,
             ) -> None:
-                self._upload_signed_pdf_to_erp(path, upload_context, document_name)
+                self._upload_saved_pdf_to_erp(path, upload_context, document_name)
 
             self._view.run_background_task(upload)
             queued += 1
@@ -1317,7 +1754,7 @@ class PDFViewerController:
             )
         except OSError as error:
             self._logger.warning(
-                "Pending ERP signed document upload not persisted",
+                "Pending ERP saved document upload not persisted",
                 destination=str(destination),
                 error=str(error),
             )
@@ -1330,7 +1767,7 @@ class PDFViewerController:
             payload = json.loads(sidecar.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             self._logger.warning(
-                "Pending ERP signed document upload invalid",
+                "Pending ERP saved document upload invalid",
                 sidecar=str(sidecar),
                 error=str(error),
             )
@@ -1345,7 +1782,7 @@ class PDFViewerController:
         logical_name = str(payload.get("logical_name") or "").strip()
         if not document_id or not logical_dir or not logical_name:
             self._logger.warning(
-                "Pending ERP signed document upload incomplete",
+                "Pending ERP saved document upload incomplete",
                 sidecar=str(sidecar),
                 document_id_configured=bool(document_id),
                 logical_dir_configured=bool(logical_dir),
@@ -1369,7 +1806,7 @@ class PDFViewerController:
     def _erp_upload_sidecar(destination: Path) -> Path:
         return destination.with_suffix(destination.suffix + ".erp-upload.json")
 
-    def _upload_signed_pdf_to_erp(
+    def _upload_saved_pdf_to_erp(
         self,
         destination: Path,
         context: ErpSignedDocumentUploadContext,
@@ -1378,11 +1815,11 @@ class PDFViewerController:
         last_error: Exception | None = None
         for attempt in range(1, self._ERP_UPLOAD_ATTEMPTS + 1):
             try:
-                self._upload_signed_pdf_to_erp_once(destination, context, attempt)
+                self._upload_saved_pdf_to_erp_once(destination, context, attempt)
             except Exception as error:
                 last_error = error
                 self._logger.exception(
-                    "ERP signed document upload attempt failed",
+                    "ERP saved document upload attempt failed",
                     document_id=context.document_id,
                     attempt=attempt,
                     attempts=self._ERP_UPLOAD_ATTEMPTS,
@@ -1399,7 +1836,7 @@ class PDFViewerController:
             return
 
         self._logger.error(
-            "ERP signed document upload failed after retries",
+            "ERP saved document upload failed after retries",
             document_id=context.document_id,
             attempts=self._ERP_UPLOAD_ATTEMPTS,
             destination=str(destination),
@@ -1422,7 +1859,7 @@ class PDFViewerController:
         self._view.show_document_flow_uploaded(
             flow_document_name or context.logical_name or destination.name
         )
-        self._view.show_status("PDF firmato inviato all'ERP")
+        self._view.show_status("PDF inviato all'ERP")
 
     def _show_erp_upload_failure(
         self,
@@ -1435,7 +1872,7 @@ class PDFViewerController:
             flow_document_name or context.logical_name or destination.name
         )
         self._view.show_error(
-            "invio documento firmato all'ERP fallito dopo "
+            "invio documento all'ERP fallito dopo "
             f"{self._ERP_UPLOAD_ATTEMPTS} tentativi: {error}"
         )
 
@@ -1445,22 +1882,22 @@ class PDFViewerController:
             sidecar.unlink(missing_ok=True)
         except OSError as error:
             self._logger.warning(
-                "Pending ERP signed document upload not removed",
+                "Pending ERP saved document upload not removed",
                 sidecar=str(sidecar),
                 error=str(error),
             )
 
-    def _upload_signed_pdf_to_erp_once(
+    def _upload_saved_pdf_to_erp_once(
         self,
         destination: Path,
         context: ErpSignedDocumentUploadContext,
         attempt: int,
     ) -> None:
         if not destination.is_file():
-            raise RuntimeError(f"PDF firmato non trovato: {destination}")
+            raise RuntimeError(f"PDF salvato non trovato: {destination}")
         content = destination.read_bytes()
         if not content:
-            raise RuntimeError(f"PDF firmato vuoto: {destination}")
+            raise RuntimeError(f"PDF salvato vuoto: {destination}")
         try:
             settings = self._general_preferences_service.get_erp_user_settings()
             service_url = settings.document_service_url.strip()
@@ -1472,7 +1909,7 @@ class PDFViewerController:
             if not username or not password:
                 raise RuntimeError("credenziali documentali ERP non configurate")
             self._logger.info(
-                "ERP signed document upload started",
+                "ERP saved document upload started",
                 document_id=context.document_id,
                 attempt=attempt,
                 attempts=self._ERP_UPLOAD_ATTEMPTS,
@@ -1498,7 +1935,7 @@ class PDFViewerController:
         except Exception:
             raise
         self._logger.info(
-            "ERP signed document uploaded",
+            "ERP saved document uploaded",
             document_id=context.document_id,
             attempt=attempt,
             attempts=self._ERP_UPLOAD_ATTEMPTS,
@@ -1669,18 +2106,49 @@ class PDFViewerController:
         page_size = document.page_sizes[self.state.page_index]
         scale_x = image_width / page_size.width
         scale_y = image_height / page_size.height
+        fill_overlays = tuple(
+            self._pdf_fill_target_overlay(target, scale_x, scale_y)
+            for target in self._pdf_fill_targets
+            if target.page_index == self.state.page_index
+        )
         if self._signature_targets:
-            return tuple(
+            signature_overlays = tuple(
                 self._signature_target_overlay(target, scale_x, scale_y)
                 for target in self._signature_targets
                 if target.page_index == self.state.page_index
             )
+            return (*signature_overlays, *fill_overlays)
         if self._signature_rectangle is not None:
-            return ()
-        return tuple(
+            return fill_overlays
+        anchor_overlays = tuple(
             self._anchor_overlay_from_match(match, scale_x, scale_y)
             for match in self._anchor_matches
             if match.page_index == self.state.page_index
+        )
+        return (*anchor_overlays, *fill_overlays)
+
+    def _pdf_fill_target_overlay(
+        self, target: PDFFillTarget, scale_x: float, scale_y: float
+    ) -> AnchorOverlay:
+        return AnchorOverlay(
+            left=target.rectangle.left * scale_x,
+            top=target.rectangle.top * scale_y,
+            width=target.rectangle.width * scale_x,
+            height=target.rectangle.height * scale_y,
+            label="Testo" if target.kind == "text" else "Firma grafica",
+            signature_content=(
+                target.signature.content
+                if target.signature is not None
+                else None
+            ),
+            signature_media_type=(
+                target.signature.media_type
+                if target.signature is not None
+                else "image/svg+xml"
+            ),
+            target_id=target.target_id,
+            text_content=target.text,
+            font_size=target.font_size * scale_y,
         )
 
     def _signature_target_overlay(

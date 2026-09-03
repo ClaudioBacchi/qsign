@@ -21,6 +21,7 @@ from app.services.general_preferences_service import (
     SupabaseSettings,
     SupabaseTableResult,
 )
+from services.signature.signature_service import CapturedSignature
 
 
 class FakeLogger:
@@ -799,6 +800,52 @@ class GeneralPreferencesServiceTests(unittest.TestCase):
             self.assertTrue(service.has_admin_password())
             self.assertTrue(service.verify_admin_password("admin-secret"))
             self.assertFalse(service.verify_admin_password("wrong"))
+
+    def test_pdf_fill_signature_is_saved_read_and_cleared(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = Path(directory) / "preferences.json"
+            service = GeneralPreferencesService(
+                preferences_path=preferences,
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+            signature = CapturedSignature(
+                content=b"\x89PNG\r\n\x1a\nimage-content",
+                media_type="image/png",
+            )
+
+            service.save_pdf_fill_signature(signature)
+
+            self.assertEqual(service.get_pdf_fill_signature(), signature)
+            payload = json.loads(preferences.read_text(encoding="utf-8"))
+            self.assertIn("pdf_fill_signature_image", payload["general"])
+            self.assertEqual(
+                payload["general"]["pdf_fill_signature_image"]["media_type"],
+                "image/png",
+            )
+
+            service.clear_pdf_fill_signature()
+
+            self.assertIsNone(service.get_pdf_fill_signature())
+
+    def test_pdf_fill_signature_rejects_non_image_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service = GeneralPreferencesService(
+                preferences_path=Path(directory) / "preferences.json",
+                protect=lambda value: f"encrypted:{value}",
+                unprotect=lambda value: value.removeprefix("encrypted:"),
+            )
+
+            with self.assertRaisesRegex(
+                GeneralPreferencesServiceError,
+                "PNG o JPG",
+            ):
+                service.save_pdf_fill_signature(
+                    CapturedSignature(
+                        content=b"<svg><polyline points='1,1 30,12'/></svg>",
+                        media_type="image/svg+xml",
+                    )
+                )
 
     def test_erp_users_are_loaded_with_basic_auth(self) -> None:
         requests = []

@@ -20,6 +20,7 @@ from services.pdf.providers.pymupdf_renderer import (
     PyMuPDFRenderer,
 )
 from services.pdf.providers.pymupdf_provider import PyMuPDFProvider
+from services.pdf.providers.pymupdf_fill_writer import PyMuPDFFillWriter
 from services.pdf.providers.pymupdf_signature_writer import PyMuPDFSignatureWriter
 from services.pdf.providers.pyhanko_digital_signature_writer import (
     PyHankoDigitalSignatureWriter,
@@ -105,10 +106,12 @@ class QSignApplication:
             logger=self._logger,
             digital_signature_writer=digital_signature_writer,
         )
+        fill_writer = PyMuPDFFillWriter(logger=self._logger)
         pdf_service = PDFService(
             backend=PyMuPDFDocumentBackend(renderer),
             renderer=renderer,
             signature_writer=signature_writer,
+            fill_writer=fill_writer,
             logger=self._logger,
         )
         view = MainView(
@@ -140,10 +143,13 @@ class QSignApplication:
             on_next=controller.next_page,
             on_zoom_in=controller.zoom_in,
             on_zoom_out=controller.zoom_out,
-            on_save_signed_pdf=controller.save_signed_pdf,
+            on_save_signed_pdf=controller.save_pdf,
             on_manual_signature_rect=controller.set_manual_signature_rectangle,
             on_add_signature_box=controller.add_signature_box,
             on_remove_signature_box=controller.remove_selected_signature_box,
+            on_pdf_fill_text=controller.start_pdf_fill_text,
+            on_pdf_fill_signature=controller.start_pdf_fill_signature,
+            on_pdf_fill_element_click=controller.remove_pdf_fill_element,
             on_retry_pending_erp_uploads=lambda: (
                 controller.retry_pending_erp_uploads()
                 + controller.retry_pending_erp_uploads("dist/signed")

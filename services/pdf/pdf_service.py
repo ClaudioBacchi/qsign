@@ -8,6 +8,7 @@ import uuid
 from models.pdf_document import PDFDocument, PageSize
 from services.logging.logging_service import LoggingService
 from services.pdf.pdf_document import PDFDocumentBackend
+from services.pdf.pdf_fill import PDFFillElement, PDFFillWriter
 from services.pdf.pdf_renderer import PDFRenderer, RenderedPage
 from services.pdf.pdf_signature import SignatureArea, VisiblePDFSignatureWriter
 from services.signature.signature_service import CapturedSignature
@@ -22,12 +23,14 @@ class PDFService:
         logger: LoggingService,
         renderer: PDFRenderer | None = None,
         signature_writer: VisiblePDFSignatureWriter | None = None,
+        fill_writer: PDFFillWriter | None = None,
         signed_output_directory: str | Path = Path("documenti_firmati"),
     ) -> None:
         self._backend = backend
         self._logger = logger
         self._renderer = renderer
         self._signature_writer = signature_writer
+        self._fill_writer = fill_writer
         self._signed_output_directory = Path(signed_output_directory)
         self._document: PDFDocument | None = None
 
@@ -167,6 +170,39 @@ class PDFService:
         )
         return destination_path
 
+    def save_filled_pdf(
+        self,
+        elements: Sequence[PDFFillElement],
+        destination: str | Path | None = None,
+    ) -> Path:
+        """Save a PDF copy with fixed fill elements applied."""
+        document = self._require_document()
+        if self._fill_writer is None:
+            raise RuntimeError("No PDF fill writer has been configured")
+        fill_elements = tuple(elements)
+        if not fill_elements:
+            raise ValueError("At least one PDF fill element is required")
+
+        destination_path = (
+            Path(destination)
+            if destination is not None
+            else self._unique_filled_pdf_path(document.path)
+        )
+        if destination is not None and destination_path.exists():
+            raise FileExistsError(f"Filled PDF destination already exists: {destination_path}")
+        self._fill_writer.save_filled_pdf(
+            source=document.path,
+            destination=destination_path,
+            elements=fill_elements,
+        )
+        self._logger.info(
+            "Filled PDF saved",
+            source=str(document.path),
+            destination=str(destination_path),
+            elements=len(fill_elements),
+        )
+        return destination_path
+
     def render_page(self, page_index: int, scale: float = 1.0) -> RenderedPage:
         document = self._require_document()
         if self._renderer is None:
@@ -182,3 +218,8 @@ class PDFService:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
         suffix = uuid.uuid4().hex[:8]
         return self._signed_output_directory / f"{source.stem}_signed_{timestamp}_{suffix}.pdf"
+
+    def _unique_filled_pdf_path(self, source: Path) -> Path:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+        suffix = uuid.uuid4().hex[:8]
+        return self._signed_output_directory / f"{source.stem}_compilato_{timestamp}_{suffix}.pdf"

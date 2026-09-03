@@ -31,6 +31,7 @@ from models.template import (
 from services.anchors.anchor_detector import AnchorDetector
 from services.anchors.anchor_models import AnchorMatch
 from services.logging.logging_service import LoggingService
+from services.pdf.pdf_fill import PDFSignatureFillElement, PDFTextFillElement
 from services.pdf.pdf_renderer import RenderedPage
 from services.pdf.pdf_service import PDFService
 from services.signature.signature_service import CapturedSignature
@@ -59,6 +60,11 @@ class FakeViewer:
         self.save_incomplete_callback = None
         self.cancel_incomplete_callback = None
         self.save_action_enabled: list[bool] = []
+        self.pdf_text_dialog_called = False
+        self.pdf_fill_signature_picker_called = False
+        self.remove_pdf_fill_label: str | None = None
+        self.remove_pdf_fill_confirm_callback = None
+        self.remove_pdf_fill_cancel_callback = None
 
     def display_document(
         self,
@@ -154,6 +160,31 @@ class FakeViewer:
                 media_type="image/svg+xml",
             )
         )
+
+    def ask_pdf_fill_text(
+        self,
+        on_confirm,
+        on_cancel,
+        *,
+        initial_text="",
+        initial_font_size=12.0,
+    ) -> None:
+        self.pdf_text_dialog_called = True
+        on_confirm("Testo libero", 13)
+
+    def pick_pdf_fill_signature_image(self, on_selected, on_cancel) -> None:
+        self.pdf_fill_signature_picker_called = True
+        on_selected(
+            CapturedSignature(
+                content=b"\x89PNG\r\n\x1a\nimage-content",
+                media_type="image/png",
+            )
+        )
+
+    def ask_remove_pdf_fill_element(self, label, on_confirm, on_cancel) -> None:
+        self.remove_pdf_fill_label = label
+        self.remove_pdf_fill_confirm_callback = on_confirm
+        self.remove_pdf_fill_cancel_callback = on_cancel
 
     def defer_signature_capture(self, callback) -> None:
         self.defer_signature_capture_count += 1
@@ -1443,7 +1474,7 @@ class PDFViewerControllerTests(unittest.TestCase):
             self.assertEqual(upload["content"], b"%PDF-signed-content")
             self.assertEqual(upload["logical_dir"], "//Dipendenti/Idoneita/")
             self.assertEqual(upload["logical_name"], "sample_signed.pdf")
-            self.assertIn("PDF firmato inviato all'ERP", self.view.statuses)
+            self.assertIn("PDF inviato all'ERP", self.view.statuses)
             self.assertIn(("Firmato", "sample_signed.pdf"), self.view.flow_events)
             self.assertIn(("Caricato", "sample_signed.pdf"), self.view.flow_events)
             self.assertFalse(
@@ -1491,7 +1522,7 @@ class PDFViewerControllerTests(unittest.TestCase):
             controller.save_signed_pdf()
 
             self.assertEqual(len(dms_client.uploads), 2)
-            self.assertEqual(self.view.statuses[-1], "PDF firmato inviato all'ERP")
+            self.assertEqual(self.view.statuses[-1], "PDF inviato all'ERP")
             self.assertIn(("Caricato", "sample_signed.pdf"), self.view.flow_events)
             self.assertEqual(self.view.errors, [])
 
@@ -1592,7 +1623,7 @@ class PDFViewerControllerTests(unittest.TestCase):
                 PDFViewerController._erp_upload_sidecar(signed_path).exists()
             )
             self.assertIn(
-                "invio documento firmato all'ERP fallito dopo 3 tentativi",
+                "invio documento all'ERP fallito dopo 3 tentativi",
                 self.view.errors[-1],
             )
             self.assertIn(("Errore invio", "sample_signed.pdf"), self.view.flow_events)
@@ -1637,7 +1668,7 @@ class PDFViewerControllerTests(unittest.TestCase):
             controller.save_signed_pdf()
 
             self.assertEqual(len(dms_client.uploads), 3)
-            self.assertEqual(self.view.statuses[-1], "PDF firmato inviato all'ERP")
+            self.assertEqual(self.view.statuses[-1], "PDF inviato all'ERP")
             self.assertIn(("Caricato", "sample_signed.pdf"), self.view.flow_events)
             self.assertFalse(
                 PDFViewerController._erp_upload_sidecar(signed_path).exists()
@@ -2629,6 +2660,353 @@ class PDFViewerControllerTests(unittest.TestCase):
 
         self.assertEqual(self.view.pages[-1][4], ())
 
+    def test_pdf_fill_text_saves_without_signature_workflow(self) -> None:
+        destination = Path("documenti_firmati/sample_compilato.pdf")
+        saved_document = PDFDocument(
+            path=destination,
+            filename=destination.name,
+            page_count=2,
+            page_sizes=(PageSize(200, 200), PageSize(200, 200)),
+            loaded=True,
+        )
+
+        def open_document(path: str | Path) -> PDFDocument:
+            document = saved_document if Path(path) == destination else self.document
+            self.service.current_document = document
+            return document
+
+        self.service.open_document.side_effect = open_document
+        self.service.save_filled_pdf.return_value = destination
+        self.controller.open_document("sample.pdf")
+
+        self.controller.start_pdf_fill_text()
+        self.controller.set_manual_signature_rectangle(20, 30, 100, 40, 200, 200)
+        self.controller.save_pdf()
+
+        self.assertTrue(self.view.pdf_text_dialog_called)
+        self.service.save_filled_pdf.assert_called_once()
+        self.service.save_signed_preview.assert_not_called()
+        self.service.save_signed_previews.assert_not_called()
+        self.assertEqual(self.service.open_document.call_args.args[0], destination)
+        self.assertEqual(self.service.current_document.path, destination)
+
+    def test_pdf_fill_signature_uses_saved_preference_without_signature_workflow(self) -> None:
+        prefs = FakeGeneralPreferencesService(
+            pdf_fill_signature=CapturedSignature(
+                content=b"\x89PNG\r\n\x1a\nimage-content",
+                media_type="image/png",
+            )
+        )
+        self.service.save_filled_pdf.return_value = Path("documenti_firmati/sample_compilato.pdf")
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.fill_signature"),
+            general_preferences_service=prefs,
+        )
+        controller.open_document("sample.pdf")
+
+        controller.start_pdf_fill_signature()
+        controller.set_manual_signature_rectangle(20, 30, 100, 40, 200, 200)
+        controller.save_pdf()
+
+        self.assertEqual(prefs.get_pdf_fill_signature_count, 2)
+        self.service.save_filled_pdf.assert_called_once()
+        self.service.save_signed_preview.assert_not_called()
+        self.service.save_signed_previews.assert_not_called()
+
+    def test_pdf_fill_save_includes_acquired_mouse_signature_and_text(self) -> None:
+        destination = Path("documenti_firmati/sample_compilato.pdf")
+        self.service.save_filled_pdf.return_value = destination
+        self.controller.open_document("sample.pdf")
+        self.controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        self.controller.apply_mouse_signature(signature)
+
+        self.controller.start_pdf_fill_text()
+        self.controller.set_manual_signature_rectangle(60, 70, 90, 30, 200, 200)
+        self.controller.save_pdf()
+
+        self.service.save_filled_pdf.assert_called_once()
+        elements = self.service.save_filled_pdf.call_args.args[0]
+        self.assertEqual(len(elements), 2)
+        self.assertIsInstance(elements[0], PDFSignatureFillElement)
+        self.assertEqual(elements[0].signature, signature)
+        self.assertEqual(elements[0].rectangle, Rectangle(20, 30, 100, 70))
+        self.assertIsInstance(elements[1], PDFTextFillElement)
+        self.assertEqual(elements[1].text, "Testo libero")
+        self.service.save_signed_preview.assert_not_called()
+        self.service.save_signed_previews.assert_not_called()
+
+    def test_pdf_fill_save_includes_acquired_signature_text_and_graphic_signature(
+        self,
+    ) -> None:
+        graphic_signature = CapturedSignature(
+            content=b"\x89PNG\r\n\x1a\nimage-content",
+            media_type="image/png",
+        )
+        prefs = FakeGeneralPreferencesService(pdf_fill_signature=graphic_signature)
+        destination = Path("documenti_firmati/sample_compilato.pdf")
+        self.service.save_filled_pdf.return_value = destination
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.fill_all"),
+            general_preferences_service=prefs,
+        )
+        controller.open_document("sample.pdf")
+        controller.set_manual_signature_rectangle(20, 30, 80, 40, 200, 200)
+        mouse_signature = CapturedSignature(
+            content=b"<svg><polyline points='1,1 2,2'/></svg>",
+            media_type="image/svg+xml",
+        )
+        controller.apply_mouse_signature(mouse_signature)
+
+        controller.start_pdf_fill_text()
+        controller.set_manual_signature_rectangle(60, 70, 90, 30, 200, 200)
+        controller.start_pdf_fill_signature()
+        controller.set_manual_signature_rectangle(30, 120, 100, 40, 200, 200)
+        controller.save_pdf()
+
+        self.service.save_filled_pdf.assert_called_once()
+        elements = self.service.save_filled_pdf.call_args.args[0]
+        self.assertEqual(len(elements), 3)
+        self.assertIsInstance(elements[0], PDFSignatureFillElement)
+        self.assertEqual(elements[0].signature, mouse_signature)
+        self.assertIsInstance(elements[1], PDFTextFillElement)
+        self.assertEqual(elements[1].text, "Testo libero")
+        self.assertIsInstance(elements[2], PDFSignatureFillElement)
+        self.assertEqual(elements[2].signature, graphic_signature)
+        self.service.save_signed_preview.assert_not_called()
+        self.service.save_signed_previews.assert_not_called()
+
+    def test_pdf_fill_save_with_partial_signature_workflow_asks_operator_choice(
+        self,
+    ) -> None:
+        view = PassiveSignatureDialogViewer()
+        self.controller = PDFViewerController(
+            pdf_service=self.service,
+            view=view,
+            logger=LoggingService.create("qsign.tests.controller.fill_partial"),
+            pdf_provider=FakePDFProviderWithoutAnchors(),
+            anchor_detector=AnchorDetector(
+                LoggingService.create("qsign.tests.controller.fill_partial_detector")
+            ),
+            template_repository=FakeTwoBoxTemplateRepository(),
+        )
+        self.service.save_filled_pdf.return_value = Path(
+            "documenti_firmati/sample_compilato.pdf"
+        )
+        self.controller.open_document("sample.pdf")
+        overlays = view.pages[-1][4]
+        self.controller.open_signature_dialog(overlays[0].target_id)
+        view.signature_confirm_callback(
+            CapturedSignature(
+                content=b"<svg><polyline points='1,1 2,2'/></svg>",
+                media_type="image/svg+xml",
+            )
+        )
+        self.controller.start_pdf_fill_text()
+        self.controller.set_manual_signature_rectangle(60, 70, 90, 30, 200, 200)
+
+        self.controller.save_pdf()
+
+        self.assertEqual(view.incomplete_missing_count, 1)
+        self.service.save_filled_pdf.assert_not_called()
+
+        view.save_incomplete_callback()
+
+        self.service.save_filled_pdf.assert_called_once()
+        elements = self.service.save_filled_pdf.call_args.args[0]
+        self.assertEqual(len(elements), 2)
+        self.assertIsInstance(elements[0], PDFSignatureFillElement)
+        self.assertIsInstance(elements[1], PDFTextFillElement)
+
+    def test_pdf_fill_text_overlay_can_be_removed_before_save(self) -> None:
+        self.service.save_filled_pdf.return_value = Path(
+            "documenti_firmati/sample_compilato.pdf"
+        )
+        self.controller.open_document("sample.pdf")
+        self.controller.start_pdf_fill_text()
+        self.controller.set_manual_signature_rectangle(20, 30, 100, 40, 200, 200)
+        overlays = self.view.pages[-1][4]
+
+        self.controller.remove_pdf_fill_element(overlays[0].target_id)
+
+        self.assertEqual(self.view.remove_pdf_fill_label, "testo")
+        self.service.save_filled_pdf.assert_not_called()
+
+        self.view.remove_pdf_fill_confirm_callback()
+
+        self.assertEqual(self.view.pages[-1][4], ())
+        self.controller.save_pdf()
+        self.service.save_filled_pdf.assert_not_called()
+        self.service.save_signed_preview.assert_not_called()
+        self.assertIn("Nessun rettangolo firma disponibile", self.view.errors[-1])
+
+    def test_pdf_fill_remove_can_be_cancelled(self) -> None:
+        self.controller.open_document("sample.pdf")
+        self.controller.start_pdf_fill_text()
+        self.controller.set_manual_signature_rectangle(20, 30, 100, 40, 200, 200)
+        overlays = self.view.pages[-1][4]
+
+        self.controller.remove_pdf_fill_element(overlays[0].target_id)
+        self.view.remove_pdf_fill_cancel_callback()
+
+        self.assertIn("rimozione Compila PDF annullata", self.view.statuses)
+        self.assertEqual(len(self.view.pages[-1][4]), 1)
+
+    def test_pdf_fill_remove_rejects_unknown_element(self) -> None:
+        self.controller.open_document("sample.pdf")
+
+        self.controller.remove_pdf_fill_element("fill-missing")
+
+        self.assertIn("Elemento Compila PDF non disponibile", self.view.errors)
+
+    def test_pdf_fill_text_uploads_saved_file_to_erp_when_context_is_available(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            filled_path = Path(directory) / "sample_compilato.pdf"
+            filled_path.write_bytes(b"%PDF-filled-text-content")
+            saved_document = PDFDocument(
+                path=filled_path,
+                filename=filled_path.name,
+                page_count=2,
+                page_sizes=(PageSize(200, 200), PageSize(200, 200)),
+                loaded=True,
+            )
+
+            def open_document(path: str | Path) -> PDFDocument:
+                document = saved_document if Path(path) == filled_path else self.document
+                self.service.current_document = document
+                return document
+
+            self.service.open_document.side_effect = open_document
+            self.service.save_filled_pdf.return_value = filled_path
+            dms_client = FakeInfinityDmsClient()
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create("qsign.tests.controller.fill_text_erp"),
+                general_preferences_service=FakeGeneralPreferencesService(
+                    erp_settings=ErpUserSettings(
+                        document_service_url="https://erp.example.test/soap",
+                        company_id="SALAV",
+                        basic_username="api-user",
+                        basic_password="api-secret",
+                    )
+                ),
+                infinity_dms_client=dms_client,
+            )
+            controller.open_document(
+                "sample.pdf",
+                ErpSignedDocumentUploadContext(
+                    document_id="DOC-1",
+                    logical_dir="//Dipendenti/Idoneita/",
+                    logical_name="sample.pdf",
+                ),
+            )
+
+            controller.start_pdf_fill_text()
+            controller.set_manual_signature_rectangle(20, 30, 100, 40, 200, 200)
+            controller.save_pdf()
+
+            self.assertEqual(len(dms_client.uploads), 1)
+            upload = dms_client.uploads[0]
+            self.assertEqual(upload["content"], b"%PDF-filled-text-content")
+            self.assertEqual(upload["logical_dir"], "//Dipendenti/Idoneita/")
+            self.assertEqual(upload["logical_name"], "sample.pdf")
+            self.assertIn("PDF inviato all'ERP", self.view.statuses)
+            self.assertIn(("Firmato", "sample.pdf"), self.view.flow_events)
+            self.assertIn(("Caricato", "sample.pdf"), self.view.flow_events)
+            self.assertFalse(PDFViewerController._erp_upload_sidecar(filled_path).exists())
+
+    def test_pdf_fill_signature_uploads_saved_file_to_erp_when_context_is_available(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            filled_path = Path(directory) / "sample_compilato.pdf"
+            filled_path.write_bytes(b"%PDF-filled-signature-content")
+            saved_document = PDFDocument(
+                path=filled_path,
+                filename=filled_path.name,
+                page_count=2,
+                page_sizes=(PageSize(200, 200), PageSize(200, 200)),
+                loaded=True,
+            )
+
+            def open_document(path: str | Path) -> PDFDocument:
+                document = saved_document if Path(path) == filled_path else self.document
+                self.service.current_document = document
+                return document
+
+            prefs = FakeGeneralPreferencesService(
+                erp_settings=ErpUserSettings(
+                    document_service_url="https://erp.example.test/soap",
+                    company_id="SALAV",
+                    basic_username="api-user",
+                    basic_password="api-secret",
+                ),
+                pdf_fill_signature=CapturedSignature(
+                    content=b"\x89PNG\r\n\x1a\nimage-content",
+                    media_type="image/png",
+                ),
+            )
+            self.service.open_document.side_effect = open_document
+            self.service.save_filled_pdf.return_value = filled_path
+            dms_client = FakeInfinityDmsClient()
+            controller = PDFViewerController(
+                pdf_service=self.service,
+                view=self.view,
+                logger=LoggingService.create(
+                    "qsign.tests.controller.fill_signature_erp"
+                ),
+                general_preferences_service=prefs,
+                infinity_dms_client=dms_client,
+            )
+            controller.open_document(
+                "sample.pdf",
+                ErpSignedDocumentUploadContext(
+                    document_id="DOC-1",
+                    logical_dir="//Dipendenti/Idoneita/",
+                    logical_name="sample.pdf",
+                ),
+            )
+
+            controller.start_pdf_fill_signature()
+            controller.set_manual_signature_rectangle(20, 30, 100, 40, 200, 200)
+            controller.save_pdf()
+
+            self.assertEqual(len(dms_client.uploads), 1)
+            upload = dms_client.uploads[0]
+            self.assertEqual(upload["content"], b"%PDF-filled-signature-content")
+            self.assertEqual(upload["logical_dir"], "//Dipendenti/Idoneita/")
+            self.assertEqual(upload["logical_name"], "sample.pdf")
+            self.assertIn("PDF inviato all'ERP", self.view.statuses)
+            self.assertIn(("Firmato", "sample.pdf"), self.view.flow_events)
+            self.assertIn(("Caricato", "sample.pdf"), self.view.flow_events)
+            self.assertFalse(PDFViewerController._erp_upload_sidecar(filled_path).exists())
+
+    def test_pdf_fill_signature_asks_image_picker_when_preference_is_missing(self) -> None:
+        prefs = FakeGeneralPreferencesService()
+        controller = PDFViewerController(
+            pdf_service=self.service,
+            view=self.view,
+            logger=LoggingService.create("qsign.tests.controller.fill_signature_missing"),
+            general_preferences_service=prefs,
+        )
+        controller.open_document("sample.pdf")
+
+        controller.start_pdf_fill_signature()
+
+        self.assertFalse(self.view.open_signature_dialog_called)
+        self.assertTrue(self.view.pdf_fill_signature_picker_called)
+        self.assertIsNotNone(prefs.pdf_fill_signature)
+
 
 class FakeGeneralPreferencesService:
     def __init__(
@@ -2636,10 +3014,13 @@ class FakeGeneralPreferencesService:
         auto_save_signed_documents: bool = False,
         signature_capture_mode: str = "mouse",
         erp_settings: ErpUserSettings | None = None,
+        pdf_fill_signature: CapturedSignature | None = None,
     ) -> None:
         self._auto_save_signed_documents = auto_save_signed_documents
         self._signature_capture_mode = signature_capture_mode
         self._erp_settings = erp_settings or ErpUserSettings()
+        self.pdf_fill_signature = pdf_fill_signature
+        self.get_pdf_fill_signature_count = 0
 
     def get_supabase_settings(self) -> SupabaseSettings:
         return SupabaseSettings(
@@ -2649,6 +3030,13 @@ class FakeGeneralPreferencesService:
 
     def get_erp_user_settings(self) -> ErpUserSettings:
         return self._erp_settings
+
+    def get_pdf_fill_signature(self) -> CapturedSignature | None:
+        self.get_pdf_fill_signature_count += 1
+        return self.pdf_fill_signature
+
+    def save_pdf_fill_signature(self, signature: CapturedSignature) -> None:
+        self.pdf_fill_signature = signature
 
 
 class FakeInfinityDmsClient:

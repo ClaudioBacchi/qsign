@@ -5,8 +5,10 @@ import unittest
 from pathlib import Path
 
 from models.pdf_document import PageSize
+from models.document import Rectangle
 from services.logging.logging_service import LoggingService
 from services.pdf.pdf_document import PDFDocumentBackend, PDFDocumentData
+from services.pdf.pdf_fill import PDFFillElement, PDFFillWriter, PDFTextFillElement
 from services.pdf.pdf_renderer import PDFRenderer, RenderedPage
 from services.pdf.pdf_service import PDFService
 from services.pdf.pdf_signature import SignatureArea, VisiblePDFSignatureWriter
@@ -69,6 +71,19 @@ class FakeSignatureWriter(VisiblePDFSignatureWriter):
         signatures: tuple[tuple[CapturedSignature, SignatureArea], ...],
     ) -> None:
         self.multi_calls.append((source, destination, tuple(signatures)))
+
+
+class FakeFillWriter(PDFFillWriter):
+    def __init__(self) -> None:
+        self.calls: list[tuple[Path, Path, tuple[PDFFillElement, ...]]] = []
+
+    def save_filled_pdf(
+        self,
+        source: Path,
+        destination: Path,
+        elements: tuple[PDFFillElement, ...],
+    ) -> None:
+        self.calls.append((source, destination, elements))
 
 
 class FailingSignatureWriter(FakeSignatureWriter):
@@ -218,6 +233,27 @@ class PDFServiceTests(unittest.TestCase):
 
         self.assertEqual(saved_path, destination)
         self.assertEqual(writer.multi_calls, [(self.source, destination, signatures)])
+
+    def test_save_filled_pdf_uses_injected_fill_writer(self) -> None:
+        writer = FakeFillWriter()
+        service = PDFService(
+            backend=self.backend,
+            fill_writer=writer,
+            logger=LoggingService.create("qsign.tests"),
+        )
+        service.open_document(self.source)
+        element = PDFTextFillElement(
+            page_index=0,
+            rectangle=Rectangle(10, 20, 120, 40),
+            text="Testo libero",
+            font_size=12,
+        )
+        destination = Path(self.temporary_directory.name) / "filled.pdf"
+
+        saved_path = service.save_filled_pdf((element,), destination)
+
+        self.assertEqual(saved_path, destination)
+        self.assertEqual(writer.calls, [(self.source, destination, (element,))])
 
     def test_two_consecutive_signatures_of_same_pdf_use_distinct_paths(self) -> None:
         writer = FakeSignatureWriter()

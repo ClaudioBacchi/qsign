@@ -24,6 +24,7 @@ from app.services.general_preferences_service import (
 )
 from models.document import Rectangle
 from services.logging.document_flow_log_service import DocumentFlowEvent
+from services.signature.signature_service import CapturedSignature
 from ui.main_view import MainView
 
 VALID_PDF_BYTES = b""
@@ -1186,11 +1187,13 @@ class MainViewTests(unittest.TestCase):
                 "Template",
                 "Aggiungi zona firma",
                 "Rimuovi zona firma",
+                "Compila: testo",
+                "Compila: firma grafica",
             ],
         )
         self.assertEqual(
             [control.width for control in menu_bar.controls[0].controls],
-            [180, 180, 180, 180, 180, 180, 180],
+            [180, 180, 180, 180, 180, 180, 180, 180, 180],
         )
         self.assertEqual(
             [control.content.value for control in menu_bar.controls[1].controls],
@@ -1205,8 +1208,8 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(menu_bar.controls[1].controls[2].width, 180)
 
         icon_toolbar = toolbar.controls[1]
-        self.assertEqual(icon_toolbar.controls[13], view._security_button)
-        self.assertTrue(getattr(icon_toolbar.controls[14], "expand", False))
+        self.assertEqual(icon_toolbar.controls[16], view._security_button)
+        self.assertTrue(getattr(icon_toolbar.controls[17], "expand", False))
         tooltips = [
             getattr(control, "tooltip", None)
             for control in icon_toolbar.controls
@@ -1221,6 +1224,8 @@ class MainViewTests(unittest.TestCase):
                 "Storico",
                 "Aggiungi zona firma",
                 "Rimuovi zona firma selezionata",
+                "Compila PDF: testo",
+                "Compila PDF: firma grafica",
                 "Pagina precedente",
                 "Pagina successiva",
                 "Zoom -",
@@ -1266,20 +1271,24 @@ class MainViewTests(unittest.TestCase):
             document_menu_items[2],
             document_menu_items[5],
             document_menu_items[6],
+            document_menu_items[7],
+            document_menu_items[8],
         ]
         document_icon_buttons = [
             icon_toolbar.controls[1],
             icon_toolbar.controls[2],
             icon_toolbar.controls[4],
             icon_toolbar.controls[5],
-        ]
-        navigation_icon_buttons = [
             icon_toolbar.controls[7],
             icon_toolbar.controls[8],
         ]
-        zoom_icon_buttons = [
+        navigation_icon_buttons = [
             icon_toolbar.controls[10],
             icon_toolbar.controls[11],
+        ]
+        zoom_icon_buttons = [
+            icon_toolbar.controls[13],
+            icon_toolbar.controls[14],
         ]
         guarded_icon_buttons = [
             *document_icon_buttons,
@@ -1330,8 +1339,8 @@ class MainViewTests(unittest.TestCase):
             zoom=1.0,
         )
 
-        self.assertTrue(icon_toolbar.controls[7].disabled)
-        self.assertFalse(icon_toolbar.controls[8].disabled)
+        self.assertTrue(icon_toolbar.controls[10].disabled)
+        self.assertFalse(icon_toolbar.controls[11].disabled)
 
         view.display_document(
             filename="sample.pdf",
@@ -1343,8 +1352,8 @@ class MainViewTests(unittest.TestCase):
             zoom=1.0,
         )
 
-        self.assertFalse(icon_toolbar.controls[7].disabled)
-        self.assertTrue(icon_toolbar.controls[8].disabled)
+        self.assertFalse(icon_toolbar.controls[10].disabled)
+        self.assertTrue(icon_toolbar.controls[11].disabled)
 
         view.display_document(
             filename="sample.pdf",
@@ -1356,8 +1365,8 @@ class MainViewTests(unittest.TestCase):
             zoom=0.25,
         )
 
-        self.assertTrue(icon_toolbar.controls[10].disabled)
-        self.assertFalse(icon_toolbar.controls[11].disabled)
+        self.assertTrue(icon_toolbar.controls[13].disabled)
+        self.assertFalse(icon_toolbar.controls[14].disabled)
 
         view.display_document(
             filename="sample.pdf",
@@ -1369,8 +1378,8 @@ class MainViewTests(unittest.TestCase):
             zoom=4.0,
         )
 
-        self.assertFalse(icon_toolbar.controls[10].disabled)
-        self.assertTrue(icon_toolbar.controls[11].disabled)
+        self.assertFalse(icon_toolbar.controls[13].disabled)
+        self.assertTrue(icon_toolbar.controls[14].disabled)
 
         view.clear_document()
 
@@ -2015,6 +2024,163 @@ class MainViewTests(unittest.TestCase):
         self.assertEqual(overlay.height, 40)
         self.assertIn("Anchor trovati: 1", view._document_status.value)
         self.assertIn("Coord: 10.0,20.0,40.0,60.0", view._document_status.value)
+
+    def test_pdf_fill_text_overlay_is_rendered_above_pdf_image(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=200,
+            image_height=300,
+            page_number=1,
+            page_count=1,
+            zoom=1.0,
+            anchor_overlays=(
+                SimpleNamespace(
+                    left=10,
+                    top=20,
+                    width=120,
+                    height=40,
+                    label="Testo",
+                    text_content="Nota libera",
+                    font_size=13,
+                    signature_content=None,
+                    signature_media_type="image/svg+xml",
+                    target_id=None,
+                ),
+            ),
+        )
+
+        overlay = view._pdf_stack.controls[1]
+        self.assertEqual(overlay.tooltip, "Testo")
+        self.assertEqual(overlay.content.value, "Nota libera")
+        self.assertEqual(overlay.content.size, 13)
+
+    def test_pdf_fill_text_dialog_uses_font_size_dropdown(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        captured: list[tuple[str, float]] = []
+
+        view.ask_pdf_fill_text(
+            lambda text, font_size: captured.append((text, font_size)),
+            initial_text="Nota",
+            initial_font_size=77,
+        )
+
+        self.assertEqual(page.dialog.title.value, "Testo")
+        text_field, font_size = page.dialog.content.controls
+        self.assertEqual(text_field.value, "Nota")
+        self.assertEqual(font_size.label, "Dimensione")
+        self.assertEqual(font_size.value, "77")
+        self.assertEqual(font_size.options[0].key, "6")
+        self.assertEqual(font_size.options[-1].key, "77")
+
+        font_size.value = "6"
+        page.dialog.actions[1].on_click(None)
+
+        self.assertEqual(captured, [("Nota", 6.0)])
+
+    def test_pdf_fill_overlay_click_uses_fill_removal_callback(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        fill_clicked: list[str | None] = []
+        signature_clicked: list[str | None] = []
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+            on_pdf_fill_element_click=lambda target_id: fill_clicked.append(target_id),
+            on_signature_area_click=lambda target_id: signature_clicked.append(target_id),
+        )
+
+        view.display_document(
+            filename="sample.pdf",
+            image_content=b"png",
+            image_width=200,
+            image_height=300,
+            page_number=1,
+            page_count=1,
+            zoom=1.0,
+            anchor_overlays=(
+                SimpleNamespace(
+                    left=10,
+                    top=20,
+                    width=120,
+                    height=40,
+                    label="Testo",
+                    text_content="Nota libera",
+                    font_size=13,
+                    signature_content=None,
+                    signature_media_type="image/svg+xml",
+                    target_id="fill-1",
+                ),
+            ),
+        )
+
+        overlay = view._pdf_stack.controls[1]
+        overlay.on_click(None)
+
+        self.assertEqual(fill_clicked, ["fill-1"])
+        self.assertEqual(signature_clicked, [])
+
+    def test_pdf_fill_remove_dialog_routes_confirm_and_cancel(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        calls: list[str] = []
+
+        view.ask_remove_pdf_fill_element(
+            "testo",
+            lambda: calls.append("confirm"),
+            lambda: calls.append("cancel"),
+        )
+
+        self.assertEqual(page.dialog.title.value, "Rimuovi elemento")
+        self.assertIn("testo", page.dialog.content.value)
+        self.assertEqual([_button_label(button) for button in page.dialog.actions], [
+            "Annulla",
+            "Rimuovi",
+        ])
+
+        page.dialog.actions[0].on_click(None)
+        self.assertEqual(calls, ["cancel"])
+
+        view.ask_remove_pdf_fill_element(
+            "firma grafica",
+            lambda: calls.append("confirm"),
+            lambda: calls.append("cancel"),
+        )
+        page.dialog.actions[1].on_click(None)
+
+        self.assertEqual(calls, ["cancel", "confirm"])
+
+    def test_pdf_fill_toolbar_buttons_are_bound_without_second_save(self) -> None:
+        page = FakePage()
+        view = MainView(page)
+        calls: list[str] = []
+        view.bind_actions(
+            on_open_document=lambda _: None,
+            on_close=lambda: None,
+            on_previous=lambda: None,
+            on_next=lambda: None,
+            on_zoom_in=lambda: None,
+            on_zoom_out=lambda: None,
+            on_save_signed_pdf=lambda: calls.append("save"),
+            on_pdf_fill_text=lambda: calls.append("text"),
+            on_pdf_fill_signature=lambda: calls.append("signature"),
+        )
+        view.build()
+
+        view._document_action_controls["pdf_fill_text"][0].on_click(None)
+        view._document_action_controls["pdf_fill_signature"][0].on_click(None)
+        view._document_action_controls["save"][0].on_click(None)
+
+        self.assertNotIn("save_filled_pdf", view._document_action_controls)
+        self.assertEqual(calls, ["text", "signature", "save"])
 
     def test_manual_signature_drag_updates_draft_overlay_without_rebuilding_stack(self) -> None:
         page = FakePage()
@@ -2750,6 +2916,36 @@ class MainViewTests(unittest.TestCase):
         self.assertFalse(service.settings.auto_save_signed_documents)
         self.assertFalse(service.settings.show_signature_text)
         self.assertEqual(service.settings.signature_capture_mode, "wacom")
+
+    def test_general_preferences_clearing_pdf_fill_signature_hides_preview(
+        self,
+    ) -> None:
+        page = FakePage()
+        service = FakeGeneralPreferencesService()
+        service.pdf_fill_signature = CapturedSignature(
+            content=b"<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+            media_type="image/svg+xml",
+        )
+        view = MainView(page, general_preferences_service=service)
+        view._admin_mode = True
+
+        view.show_general_preferences()
+        signature_tab = _dialog_tab_contents(page.dialog)[2]
+        preview = _find_pdf_fill_signature_preview(signature_tab)
+
+        self.assertTrue(preview.visible)
+        self.assertTrue(preview.src.startswith("data:image/svg+xml;base64,"))
+
+        _find_button(signature_tab, "Cancella").on_click(None)
+
+        self.assertIsNone(service.pdf_fill_signature)
+        self.assertFalse(preview.visible)
+        self.assertEqual(preview.src, "")
+        self.assertIsNone(preview.src_base64)
+        self.assertEqual(
+            _general_preferences_result(page.dialog).content.value,
+            "Firma grafica rimossa",
+        )
 
     def test_general_preferences_disabling_erp_document_list_restores_logo_home(self) -> None:
         page = FakePage()
@@ -3561,6 +3757,17 @@ def _find_button(root: object, label: str) -> object:
     raise AssertionError(f"Button {label!r} not found")
 
 
+def _find_pdf_fill_signature_preview(root: object) -> object:
+    for control in _walk_controls(root):
+        if (
+            control.__class__.__name__ == "Image"
+            and getattr(control, "width", None) == 220
+            and getattr(control, "height", None) == 90
+        ):
+            return control
+    raise AssertionError("PDF fill signature preview not found")
+
+
 def _erp_refresh_button(view: MainView) -> object:
     return view._home_view.content.content.controls[0].controls[2]
 
@@ -3717,6 +3924,7 @@ class FakeGeneralPreferencesService:
         self.created_table_settings = SupabaseSettings()
         self.admin_password = ""
         self.session_user_logs: list[tuple[ErpUserSettings, str]] = []
+        self.pdf_fill_signature: CapturedSignature | None = None
 
     def get_supabase_settings(self) -> SupabaseSettings:
         return self.settings
@@ -3767,6 +3975,15 @@ class FakeGeneralPreferencesService:
 
     def verify_admin_password(self, password: str) -> bool:
         return bool(self.admin_password) and password == self.admin_password
+
+    def get_pdf_fill_signature(self) -> CapturedSignature | None:
+        return self.pdf_fill_signature
+
+    def save_pdf_fill_signature(self, signature: CapturedSignature) -> None:
+        self.pdf_fill_signature = signature
+
+    def clear_pdf_fill_signature(self) -> None:
+        self.pdf_fill_signature = None
 
     def log_erp_user_session_selection(
         self,

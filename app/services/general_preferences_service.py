@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from services.logging.logging_service import LoggingService
+from services.signature.signature_service import CapturedSignature
 
 
 class GeneralPreferencesServiceError(RuntimeError):
@@ -123,6 +124,8 @@ class GeneralPreferencesService:
     _ERP_REFRESH_INTERVAL_SECONDS_KEY = "erp_refresh_interval_seconds"
     _SHOW_SIGNATURE_TEXT_KEY = "show_signature_text"
     _SIGNATURE_CAPTURE_MODE_KEY = "signature_capture_mode"
+    _PDF_FILL_SIGNATURE_KEY = "pdf_fill_signature_image"
+    _PDF_FILL_SIGNATURE_LEGACY_SVG_KEY = "pdf_fill_signature_svg"
     _LOCAL_ERP_PORT_KEY = "local_erp_port"
     _ERP_USERS_URL_KEY = "erp_users_url"
     _ERP_DOCUMENTS_URL_KEY = "erp_documents_url"
@@ -340,6 +343,68 @@ class GeneralPreferencesService:
         general = self._read_general_preferences()
         stored_password = self._read_encrypted_value(general, self._ADMIN_PASSWORD_KEY)
         return bool(stored_password) and password == stored_password
+
+    def get_pdf_fill_signature(self) -> CapturedSignature | None:
+        general = self._read_general_preferences()
+        value = general.get(self._PDF_FILL_SIGNATURE_KEY)
+        if isinstance(value, dict):
+            content_value = value.get("content_base64")
+            media_type = str(value.get("media_type") or "")
+            if not isinstance(content_value, str) or not content_value.strip():
+                return None
+            try:
+                content = base64.b64decode(content_value.encode("ascii"), validate=True)
+            except (ValueError, UnicodeEncodeError):
+                return None
+            if not _is_supported_pdf_fill_signature_image(content, media_type):
+                return None
+            return CapturedSignature(content=content, media_type=media_type)
+
+        legacy_svg = general.get(self._PDF_FILL_SIGNATURE_LEGACY_SVG_KEY)
+        if not isinstance(legacy_svg, str) or not legacy_svg.strip():
+            return None
+        return CapturedSignature(
+            content=legacy_svg.encode("utf-8"),
+            media_type="image/svg+xml",
+        )
+
+    def save_pdf_fill_signature(self, signature: CapturedSignature) -> None:
+        if not _is_supported_pdf_fill_signature_image(
+            signature.content,
+            signature.media_type,
+        ):
+            raise GeneralPreferencesServiceError(
+                "La firma grafica deve essere un'immagine PNG o JPG"
+            )
+        payload = self._read_preferences()
+        general = payload.get(self._PREFERENCES_KEY)
+        if not isinstance(general, dict):
+            general = {}
+        general[self._PDF_FILL_SIGNATURE_KEY] = {
+            "media_type": signature.media_type,
+            "content_base64": base64.b64encode(signature.content).decode("ascii"),
+        }
+        general.pop(self._PDF_FILL_SIGNATURE_LEGACY_SVG_KEY, None)
+        payload[self._PREFERENCES_KEY] = general
+        self._write_preferences(payload)
+        if self._logger is not None:
+            self._logger.info(
+                "PDF fill graphic signature image saved",
+                media_type=signature.media_type,
+                bytes=len(signature.content),
+            )
+
+    def clear_pdf_fill_signature(self) -> None:
+        payload = self._read_preferences()
+        general = payload.get(self._PREFERENCES_KEY)
+        if not isinstance(general, dict):
+            general = {}
+        general.pop(self._PDF_FILL_SIGNATURE_KEY, None)
+        general.pop(self._PDF_FILL_SIGNATURE_LEGACY_SVG_KEY, None)
+        payload[self._PREFERENCES_KEY] = general
+        self._write_preferences(payload)
+        if self._logger is not None:
+            self._logger.info("PDF fill graphic signature cleared")
 
     def log_erp_user_session_selection(
         self,
@@ -1065,6 +1130,16 @@ def _read_http_error_body(error: urllib.error.HTTPError) -> str:
     if isinstance(body, str):
         return body
     return ""
+
+
+def _is_supported_pdf_fill_signature_image(content: bytes, media_type: str) -> bool:
+    if not content:
+        return False
+    if media_type == "image/png":
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    if media_type in {"image/jpeg", "image/jpg"}:
+        return content.startswith(b"\xff\xd8")
+    return False
 
 
 def _changed_general_settings_fields(

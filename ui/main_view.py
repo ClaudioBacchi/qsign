@@ -104,6 +104,8 @@ class AnchorOverlayViewModel(Protocol):
     signature_content: bytes | None
     signature_media_type: str
     target_id: str | None
+    text_content: str
+    font_size: float
 
 
 class QSignTheme:
@@ -251,6 +253,9 @@ class MainView:
         self._on_save_signed_pdf: Callable[[], None] | None = None
         self._on_add_signature_box: Callable[[], None] | None = None
         self._on_remove_signature_box: Callable[[], None] | None = None
+        self._on_pdf_fill_text: Callable[[], None] | None = None
+        self._on_pdf_fill_signature: Callable[[], None] | None = None
+        self._on_pdf_fill_element_click: Callable[[str | None], None] | None = None
         self._on_retry_pending_erp_uploads: Callable[[], int] | None = None
         self._on_verify_signature_setup: Callable[[SupabaseSettings], str] | None = None
         self._on_signature_area_click: Callable[[str | None], None] | None = None
@@ -312,6 +317,7 @@ class MainView:
         )
         self._file_picker = ft.FilePicker()
         self._pfx_file_picker = ft.FilePicker()
+        self._pdf_fill_signature_file_picker = ft.FilePicker()
         self._document_name = ft.Text("Nessun documento")
         self._page_count = ft.Text("Pagina — / —")
         self._zoom = ft.Text("Zoom: 100%")
@@ -418,6 +424,9 @@ class MainView:
         ) = None,
         on_add_signature_box: Callable[[], None] | None = None,
         on_remove_signature_box: Callable[[], None] | None = None,
+        on_pdf_fill_text: Callable[[], None] | None = None,
+        on_pdf_fill_signature: Callable[[], None] | None = None,
+        on_pdf_fill_element_click: Callable[[str | None], None] | None = None,
         on_retry_pending_erp_uploads: Callable[[], int] | None = None,
         on_verify_signature_setup: Callable[[SupabaseSettings], str] | None = None,
         on_signature_area_click: Callable[[str | None], None] | None = None,
@@ -433,6 +442,9 @@ class MainView:
         self._on_manual_signature_rect = on_manual_signature_rect
         self._on_add_signature_box = on_add_signature_box
         self._on_remove_signature_box = on_remove_signature_box
+        self._on_pdf_fill_text = on_pdf_fill_text
+        self._on_pdf_fill_signature = on_pdf_fill_signature
+        self._on_pdf_fill_element_click = on_pdf_fill_element_click
         self._on_retry_pending_erp_uploads = on_retry_pending_erp_uploads
         self._on_verify_signature_setup = on_verify_signature_setup
         self._on_signature_area_click = on_signature_area_click
@@ -443,6 +455,7 @@ class MainView:
         self._page.padding = 0
         self._page.services.append(self._file_picker)
         self._page.services.append(self._pfx_file_picker)
+        self._page.services.append(self._pdf_fill_signature_file_picker)
         self._document_action_controls = {}
         toolbar = ft.Column(
             controls=[
@@ -869,6 +882,26 @@ class MainView:
                                 ),
                             ),
                         ),
+                        self._register_document_action(
+                            "pdf_fill_text",
+                            ft.MenuItemButton(
+                                content=ft.Text("Compila: testo"),
+                                width=menu_item_width,
+                                on_click=lambda _: self._invoke(
+                                    self._on_pdf_fill_text
+                                ),
+                            ),
+                        ),
+                        self._register_document_action(
+                            "pdf_fill_signature",
+                            ft.MenuItemButton(
+                                content=ft.Text("Compila: firma grafica"),
+                                width=menu_item_width,
+                                on_click=lambda _: self._invoke(
+                                    self._on_pdf_fill_signature
+                                ),
+                            ),
+                        ),
                     ],
                 ),
                 self._preferences_menu_button,
@@ -981,6 +1014,23 @@ class MainView:
                         icon=ft.Icons.DELETE_OUTLINE,
                         tooltip="Rimuovi zona firma selezionata",
                         on_click=lambda _: self._invoke(self._on_remove_signature_box),
+                    ),
+                ),
+                ft.VerticalDivider(width=12),
+                self._register_document_action(
+                    "pdf_fill_text",
+                    ft.IconButton(
+                        icon=ft.Icons.TEXT_FIELDS,
+                        tooltip="Compila PDF: testo",
+                        on_click=lambda _: self._invoke(self._on_pdf_fill_text),
+                    ),
+                ),
+                self._register_document_action(
+                    "pdf_fill_signature",
+                    ft.IconButton(
+                        icon=ft.Icons.DRAW,
+                        tooltip="Compila PDF: firma grafica",
+                        on_click=lambda _: self._invoke(self._on_pdf_fill_signature),
                     ),
                 ),
                 ft.VerticalDivider(width=12),
@@ -2627,6 +2677,129 @@ class MainView:
         self._active_dialog = dialog
         self._page.show_dialog(dialog)
 
+    def ask_pdf_fill_text(
+        self,
+        on_confirm: Callable[[str, float], None],
+        on_cancel: Callable[[], None] | None = None,
+        *,
+        initial_text: str = "",
+        initial_font_size: float = 12.0,
+    ) -> None:
+        ft = self._ft
+        text_field = ft.TextField(
+            label="Testo",
+            value=initial_text,
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+            width=420,
+        )
+        initial_size = int(
+            _bounded_float(
+                initial_font_size,
+                default=12.0,
+                minimum=6.0,
+                maximum=77.0,
+            )
+        )
+        font_size = ft.Dropdown(
+            label="Dimensione",
+            value=str(initial_size),
+            options=[ft.dropdown.Option(str(size), str(size)) for size in range(6, 78)],
+            width=140,
+        )
+
+        def confirm(_: object) -> None:
+            self._close_dialog()
+            on_confirm(
+                text_field.value or "",
+                _bounded_float(
+                    font_size.value,
+                    default=12.0,
+                    minimum=6.0,
+                    maximum=77.0,
+                ),
+            )
+
+        def cancel(_: object) -> None:
+            self._close_dialog()
+            if on_cancel is not None:
+                on_cancel()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Testo"),
+            content=ft.Column(
+                controls=[text_field, font_size],
+                tight=True,
+                spacing=12,
+            ),
+            actions=[
+                ft.TextButton("Annulla", on_click=cancel),
+                ft.FilledButton("Inserisci", on_click=confirm),
+            ],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
+    def ask_remove_pdf_fill_element(
+        self,
+        label: str,
+        on_confirm: Callable[[], None],
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        ft = self._ft
+
+        def confirm(_: object) -> None:
+            self._close_dialog()
+            on_confirm()
+
+        def cancel(_: object) -> None:
+            self._close_dialog()
+            if on_cancel is not None:
+                on_cancel()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Rimuovi elemento"),
+            content=ft.Text(f"Rimuovere {label} dal PDF compilato?"),
+            actions=[
+                ft.TextButton("Annulla", on_click=cancel),
+                ft.FilledButton("Rimuovi", on_click=confirm),
+            ],
+        )
+        self._active_dialog = dialog
+        self._page.show_dialog(dialog)
+
+    def pick_pdf_fill_signature_image(
+        self,
+        on_selected: Callable[[CapturedSignature], None],
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        async def pick_image() -> None:
+            files = await self._pdf_fill_signature_file_picker.pick_files(
+                dialog_title="Scegli firma grafica",
+                file_type=self._ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["png", "jpg", "jpeg"],
+                allow_multiple=False,
+            )
+            if not files or not files[0].path:
+                if on_cancel is not None:
+                    on_cancel()
+                return
+            try:
+                signature = self._pdf_fill_signature_image_from_path(
+                    Path(files[0].path)
+                )
+            except Exception as error:
+                self.show_error(str(error))
+                return
+            on_selected(signature)
+
+        run_task = getattr(self._page, "run_task", None)
+        if callable(run_task):
+            run_task(pick_image)
+            return
+        asyncio.run(pick_image())
+
     def _set_signature_pad_size(
         self,
         width: float | None,
@@ -3261,6 +3434,54 @@ class MainView:
             except Exception as error:
                 set_result(f"Verifica firma fallita: {error}")
 
+        fill_signature_preview = ft.Image(
+            src="",
+            width=220,
+            height=90,
+            fit=ft.BoxFit.CONTAIN,
+        )
+        fill_signature_status = ft.Text("")
+
+        def refresh_fill_signature_preview(update: bool = True) -> None:
+            signature = self._general_preferences_service.get_pdf_fill_signature()
+            if signature is None:
+                fill_signature_preview.src = ""
+                fill_signature_preview.src_base64 = None
+                fill_signature_preview.visible = False
+                fill_signature_status.value = "Nessuna firma grafica salvata"
+            else:
+                encoded = base64.b64encode(signature.content).decode("ascii")
+                fill_signature_preview.src = (
+                    f"data:{signature.media_type};base64,{encoded}"
+                )
+                fill_signature_preview.src_base64 = None
+                fill_signature_preview.visible = True
+                fill_signature_status.value = "Firma grafica salvata"
+            if update:
+                self._update_controls(fill_signature_preview, fill_signature_status)
+
+        def choose_fill_signature(_: object) -> None:
+            def save_signature(signature: CapturedSignature) -> None:
+                try:
+                    self._general_preferences_service.save_pdf_fill_signature(signature)
+                except Exception as error:
+                    set_result(str(error))
+                    return
+                refresh_fill_signature_preview()
+                set_result("Firma grafica salvata")
+
+            self.pick_pdf_fill_signature_image(
+                save_signature,
+                lambda: set_result("Selezione firma annullata"),
+            )
+
+        def clear_fill_signature(_: object) -> None:
+            self._general_preferences_service.clear_pdf_fill_signature()
+            refresh_fill_signature_preview()
+            set_result("Firma grafica rimossa")
+
+        refresh_fill_signature_preview(update=False)
+
         supabase_tab_content = ft.Container(
             padding=ft.Padding(left=0, top=14, right=0, bottom=0),
             content=ft.Column(
@@ -3311,6 +3532,49 @@ class MainView:
                         ],
                         spacing=10,
                     ),
+                    ft.Divider(),
+                    ft.Text(
+                        "Firma grafica per Compila PDF",
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=fill_signature_preview,
+                                width=240,
+                                height=100,
+                                border=ft.Border(
+                                    left=ft.BorderSide(1, ft.Colors.GREY_400),
+                                    top=ft.BorderSide(1, ft.Colors.GREY_400),
+                                    right=ft.BorderSide(1, ft.Colors.GREY_400),
+                                    bottom=ft.BorderSide(1, ft.Colors.GREY_400),
+                                ),
+                                bgcolor=ft.Colors.WHITE,
+                                alignment=ft.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    fill_signature_status,
+                                    ft.Row(
+                                        controls=[
+                                            ft.OutlinedButton(
+                                                "Scegli immagine",
+                                                on_click=choose_fill_signature,
+                                            ),
+                                            ft.OutlinedButton(
+                                                "Cancella",
+                                                on_click=clear_fill_signature,
+                                            ),
+                                        ],
+                                        spacing=10,
+                                    ),
+                                ],
+                                spacing=10,
+                            ),
+                        ],
+                        spacing=16,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
                 ],
                 spacing=12,
             ),
@@ -3333,7 +3597,7 @@ class MainView:
             title=ft.Text("Impostazioni"),
             content=ft.Container(
                 width=720,
-                height=320,
+                height=420,
                 content=ft.Tabs(
                     content=ft.Column(
                         controls=[
@@ -4563,6 +4827,22 @@ class MainView:
         return f"data:image/png;base64,{encoded}"
 
     @staticmethod
+    def _pdf_fill_signature_image_from_path(path: Path) -> CapturedSignature:
+        suffix = path.suffix.lower()
+        if suffix == ".png":
+            media_type = "image/png"
+        elif suffix in {".jpg", ".jpeg"}:
+            media_type = "image/jpeg"
+        else:
+            raise ValueError("La firma grafica deve essere un'immagine PNG o JPG")
+        content = path.read_bytes()
+        if media_type == "image/png" and not content.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("Il file PNG della firma grafica non è valido")
+        if media_type == "image/jpeg" and not content.startswith(b"\xff\xd8"):
+            raise ValueError("Il file JPG della firma grafica non è valido")
+        return CapturedSignature(content=content, media_type=media_type)
+
+    @staticmethod
     def _apply_windows_window_icon(icon_path: str, title: str | None) -> None:
         if not title:
             return
@@ -4670,19 +4950,23 @@ class MainView:
         self, overlays: tuple[AnchorOverlayViewModel, ...]
     ) -> list[object]:
         ft = self._ft
-        border_side = ft.BorderSide(2, ft.Colors.GREEN)
         return [
-            self._build_anchor_overlay_control(overlay, border_side)
+            self._build_anchor_overlay_control(overlay)
             for overlay in overlays
         ]
 
     def _build_anchor_overlay_control(
-        self, overlay: AnchorOverlayViewModel, border_side: object
+        self, overlay: AnchorOverlayViewModel
     ) -> object:
         ft = self._ft
         target_id = getattr(overlay, "target_id", None)
-        is_signature_area = target_id is not None or overlay.label == "Zona firma"
+        is_fill_overlay = overlay.label in {"Testo", "Firma grafica"}
+        is_signature_area = (
+            not is_fill_overlay and (target_id is not None or overlay.label == "Zona firma")
+        )
         ignore_interactions = self._manual_signature_mode and not is_signature_area
+        color = ft.Colors.BLUE_700 if is_fill_overlay else ft.Colors.GREEN
+        border_side = ft.BorderSide(2, color)
         return ft.Container(
             left=overlay.left,
             top=overlay.top,
@@ -4694,16 +4978,29 @@ class MainView:
                 right=border_side,
                 bottom=border_side,
             ),
-            bgcolor=ft.Colors.with_opacity(0.08, ft.Colors.GREEN),
+            bgcolor=ft.Colors.with_opacity(0.08, color),
             tooltip=overlay.label,
             ignore_interactions=ignore_interactions,
             on_click=(
                 None
                 if ignore_interactions
-                else self._signature_area_click_handler(target_id)
+                else (
+                    self._pdf_fill_element_click_handler(target_id)
+                    if is_fill_overlay
+                    else self._signature_area_click_handler(target_id)
+                )
             ),
             content=self._signature_control_for_overlay(overlay),
         )
+
+    def _pdf_fill_element_click_handler(
+        self, target_id: str | None
+    ) -> Callable[[object], None]:
+        return lambda _: self._invoke_pdf_fill_element_click(target_id)
+
+    def _invoke_pdf_fill_element_click(self, target_id: str | None) -> None:
+        if self._on_pdf_fill_element_click is not None:
+            self._on_pdf_fill_element_click(target_id)
 
     def _signature_area_click_handler(
         self, target_id: str | None
@@ -4717,6 +5014,14 @@ class MainView:
     def _signature_control_for_overlay(
         self, overlay: AnchorOverlayViewModel
     ) -> object | None:
+        text = getattr(overlay, "text_content", "")
+        if text:
+            return self._ft.Text(
+                text,
+                size=max(6.0, float(getattr(overlay, "font_size", 12.0))),
+                color=self._ft.Colors.BLACK,
+                overflow=self._ft.TextOverflow.CLIP,
+            )
         content = getattr(overlay, "signature_content", None)
         if content is None:
             return None
