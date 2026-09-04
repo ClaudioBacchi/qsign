@@ -856,9 +856,15 @@ class MainViewTests(unittest.TestCase):
             "Risposta ERP documenti non valida",
             (),
         )
+        background_jobs: list[object] = []
+        ui_jobs: list[object] = []
         view = MainView(page, general_preferences_service=service)
+        view.run_background_task = lambda callback: background_jobs.append(callback)
+        view.run_ui_task = lambda callback: ui_jobs.append(callback)
 
         view.refresh_erp_documents()
+        background_jobs[0]()
+        ui_jobs[0]()
 
         error_column = view._home_view.content.content
         self.assertEqual(error_column.controls[1].value, "Risposta ERP documenti non valida")
@@ -1233,6 +1239,10 @@ class MainViewTests(unittest.TestCase):
                 "Sblocca impostazioni amministratore",
             ],
         )
+        self.assertEqual(icon_toolbar.controls[4].icon_color, view._ft.Colors.RED_700)
+        self.assertEqual(icon_toolbar.controls[5].icon_color, view._ft.Colors.RED_700)
+        self.assertEqual(icon_toolbar.controls[7].icon_color, view._ft.Colors.BLUE_700)
+        self.assertEqual(icon_toolbar.controls[8].icon_color, view._ft.Colors.BLUE_700)
 
     def test_app_shell_applies_qsign_theme_tokens(self) -> None:
         page = FakePage()

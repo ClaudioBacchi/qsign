@@ -1133,6 +1133,9 @@ class PDFViewerController:
                 self._view.defer_viewer_refresh(self._render_current_page)
             return
         if self._auto_save_signed_documents_enabled():
+            if self._pdf_fill_targets:
+                self.save_filled_pdf()
+                return
             self.save_signed_pdf()
             return
         self._has_unsaved_signature = True
@@ -1418,6 +1421,7 @@ class PDFViewerController:
     ) -> None:
         page_index = self.state.page_index
         zoom = self.state.zoom
+        close_after_save = self._auto_save_signed_documents_enabled()
         self._filled_pdf_save_active = False
         self._pdf_fill_targets = ()
         self._pdf_fill_tool = None
@@ -1425,7 +1429,10 @@ class PDFViewerController:
         self._pending_pdf_fill_page_index = None
         self._workflow_status = f"PDF compilato salvato: {destination}"
         self._logger.info("Filled PDF saved", destination=str(destination))
-        self._open_saved_filled_pdf(destination, page_index=page_index, zoom=zoom)
+        if close_after_save:
+            self._close_saved_filled_pdf()
+        else:
+            self._open_saved_filled_pdf(destination, page_index=page_index, zoom=zoom)
         self._view.show_document_flow_signed(flow_document_name)
         self._view.show_status(f"PDF compilato salvato: {destination}")
         self._queue_saved_pdf_erp_upload(
@@ -1433,6 +1440,29 @@ class PDFViewerController:
             erp_upload_context,
             flow_document_name,
         )
+
+    def _close_saved_filled_pdf(self) -> None:
+        if self._pdf_service.current_document is not None:
+            self._pdf_service.close_document()
+        self.state = PDFViewerState()
+        self._canonical_document = None
+        self._anchor_matches = ()
+        self._signature_anchor_match = None
+        self._signature_rectangle = None
+        self._signature_page_index = None
+        self._captured_signature = None
+        self._signature_targets = ()
+        self._selected_signature_target_id = None
+        self._add_signature_box_mode = False
+        self._recognized_template = None
+        self._pending_manual_rectangle_restore = None
+        self._erp_upload_context = None
+        self._document_flow_name = ""
+        self._has_unsaved_signature = False
+        self._wacom_capture_active = False
+        self._signed_pdf_save_active = False
+        self._view.set_manual_signature_mode(False)
+        self._view.clear_document()
 
     def _open_saved_filled_pdf(
         self,

@@ -177,6 +177,10 @@ class QSignTheme:
         return ft.Colors.BLUE_700
 
     @staticmethod
+    def secondary(ft: object) -> str:
+        return ft.Colors.RED_700
+
+    @staticmethod
     def primary_text(ft: object) -> str:
         return ft.Colors.GREY_900
 
@@ -1004,6 +1008,7 @@ class MainView:
                     "add_signature_box",
                     ft.IconButton(
                         icon=ft.Icons.ADD,
+                        icon_color=QSignTheme.secondary(ft),
                         tooltip="Aggiungi zona firma",
                         on_click=lambda _: self._invoke(self._on_add_signature_box),
                     ),
@@ -1012,6 +1017,7 @@ class MainView:
                     "remove_signature_box",
                     ft.IconButton(
                         icon=ft.Icons.DELETE_OUTLINE,
+                        icon_color=QSignTheme.secondary(ft),
                         tooltip="Rimuovi zona firma selezionata",
                         on_click=lambda _: self._invoke(self._on_remove_signature_box),
                     ),
@@ -1021,6 +1027,7 @@ class MainView:
                     "pdf_fill_text",
                     ft.IconButton(
                         icon=ft.Icons.TEXT_FIELDS,
+                        icon_color=QSignTheme.primary(ft),
                         tooltip="Compila PDF: testo",
                         on_click=lambda _: self._invoke(self._on_pdf_fill_text),
                     ),
@@ -1029,6 +1036,7 @@ class MainView:
                     "pdf_fill_signature",
                     ft.IconButton(
                         icon=ft.Icons.DRAW,
+                        icon_color=QSignTheme.primary(ft),
                         tooltip="Compila PDF: firma grafica",
                         on_click=lambda _: self._invoke(self._on_pdf_fill_signature),
                     ),
